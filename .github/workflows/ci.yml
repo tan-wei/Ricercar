@@ -27,7 +27,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       - run: npm ci
       - name: Check the pushed commits
         if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
@@ -55,7 +55,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       - run: just sync
       - run: just lint
       - run: just format-check
@@ -79,7 +79,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       - run: just sync
       - run: just test
 
@@ -92,7 +92,7 @@ jobs:
         with:
           python-version: "3.14"
           enable-cache: true
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       - run: just sync
       - run: just coverage
       - uses: actions/upload-artifact@v4
