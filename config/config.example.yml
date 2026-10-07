@@ -1,0 +1,110 @@
+# ── Ricercar — every setting there is, with its default ────────────────────
+#
+# This file is a reference, not a default: a run loads `config.yml` (plus
+# `config.local.yml`, if it exists, for the credentials). Copy what you need into one
+# of those. Unknown keys are ignored silently — which is why starting from this file is
+# how you find out that a setting you "already configured" does not exist.
+#
+# Precedence, highest first:
+#   1. --config FILE   (repeatable; later files win)
+#   2. config/config.local.yml   (secrets; gitignored)
+#   3. config/config.yml
+#   4. RICERCAR__* environment variables   (YAML outranks them)
+#   5. .env in the project root
+
+browser:
+  # How patient the driver is. How a browser is *obtained* is not configurable: every
+  # source is driven through a browser you launched yourself (see README "Cloudflare").
+  navigation_timeout: 30000 # ms a page load may take
+  action_timeout: 15000 # ms a click or a fill may take
+  downloads_dir: data/torrents
+
+run:
+  resume: true # skip the tasks already finished today
+  state_file: data/state.json # known uploaders, finished tasks, last run
+  task_history_file: data/task_history.json # each task's yield over time
+  stale_task_days: 60 # a task that found nothing for this long is reported
+  stale_task_runs: 5 # …but only after it has run this many times
+
+diagnostics:
+  # One directory per failure: page.html, page.png, trace.zip, failure.json
+  failures_dir: data/failures
+  save_traces: true # traces cost time and disk; the failing one is the only one kept
+
+schedule:
+  interval_minutes: 60 # `ricercar` with no --once repeats on this interval
+  run_on_start: true # …and starts straight away instead of waiting an interval
+
+sources:
+  rutracker:
+    connect_url: "http://localhost:9222" # the browser YOU launched (CDP endpoint)
+    login:
+      username: "" # also used to check that the session belongs to this account
+      password: "" # never posted: the login POST is blocked, a human logs in
+    selectors_file: null # optional YAML overriding URLs/selectors/literals
+    # The sections to watch, name → the site's forum id (`f`), in the order to search
+    # them. A task that names no category searches all of them. rutracker's
+    # classical-music sections, as the legacy tool listed them:
+    categories:
+      Classic_Modern_Video: 445
+      Classic_Modern_DVD_Video: 984
+      Opera_Video: 702
+      Opera_DVD_Video: 983
+      Ballet_Video: 1990
+      Multiple_Disc_Lossless: 560
+      Multiple_Disc_Lossy: 436
+      Opera_Lossless: 794
+      Vocal_Music_Lossless: 556
+      Vocal_And_Choral_Music_Lossy: 2309
+      Orchestral_Lossless: 557
+      Orchestral_Lossy: 2310
+      Concerto_Lossless: 2308
+      Chamber_Lossless: 558
+      Solo_Lossless: 793
+      Chamber_And_Solo_Lossy: 2311
+      Chants: 1395
+      Choral_Music_Lossless: 2307
+      Classic_Modern_Crossover_Lossless_Lossy: 969
+      Eastern_European_Folk_Lossy: 1130
+      Eastern_European_Folk_Lossless: 1131
+      Western_European_Folk_Lossy: 1132
+      Western_European_Folk_Lossless: 1133
+      Hi_Res_Stereo_And_Multichannel: 1299
+      Classical_Instrumental_HiRes: 1884
+      Classical_Vocal_Choral_HiRes: 1164
+      Classic_And_Modern_Digitised: 1660
+      Alt_Punk_Independent_HiRes: 1396
+    # One entry per search: `text` (keywords), `author` (uploader), `category` (a section
+    # id) — and a task that names no category searches every section listed above, which
+    # is what the legacy tool did for each of its tasks. Quote the wildcard:
+    tasks:
+      - text: Bach # in every configured section
+      - author: some_uploader # everything they posted, in every section
+      - author: another_uploader
+        category: 794 # …in one section only
+      - category: "*" # anything new anywhere; same as naming no category
+    must_complete_tasks: [] # run every time, whatever random_choice picks
+    random_choice: 3 # how many of `tasks` to pick per run
+    max_pages: 50 # how far to follow the pager per search
+    quota:
+      limit_torrents_one_day: 50 # per tracker, counted in the database
+
+retry:
+  max_attempts: 3
+  base_delay: 2.0 # seconds; a timeout waits twice this
+  max_delay: 60.0
+  backoff_factor: 2.0
+
+log:
+  level: DEBUG # TRACE|DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL
+  format: "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</> | <level>{level: <8}</> | <cyan>{name}</>:<cyan>{function}</>:<cyan>{line}</> - <level>{message}</>"
+  colorize: true
+  file_rotation: 1 day
+  file_retention: 30 days
+  json_output: false # one JSON object per line, for a log collector
+
+database:
+  path: data/torrents.db # a legacy database is imported, never written into
+
+notify:
+  urls: [] # any apprise URL: mailto://, discord://, telegram://, slack://, json://…

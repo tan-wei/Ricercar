@@ -1,0 +1,86 @@
+[project]
+name = "ricercar"
+version = "0.1.0"
+description = "Torrent monitoring & downloading tool"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Ricercar Contributors" },
+]
+
+dependencies = [
+    "playwright>=1.40",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "bencode.py>=4.0",
+    "loguru>=0.7",
+    "tenacity>=8.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "apscheduler>=3.10",
+    "rich>=13.0",
+    "apprise>=1.7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.3",
+    "mypy>=1.8",
+    "pre-commit>=3.6",
+]
+
+[project.scripts]
+ricercar = "ricercar.cli:cli"
+
+[tool.uv.sources]
+# All dependencies come from PyPI — no local path overrides
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ARG", "C4", "PIE", "T20"]
+ignore = [
+    "B904",  # raise-without-from-inside-except — allow in simple cases
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["T201"]  # CLI scripts legitimately use print()
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src"]
+warn_unused_configs = true
+disallow_any_unimported = false
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "bencode",
+    "apscheduler.*",
+    "apprise",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "integration: drives a real browser over CDP (skipped when none is attached)",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ricercar"]
