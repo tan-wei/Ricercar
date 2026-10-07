@@ -10,6 +10,7 @@ import pytest
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from ricercar import config
 from ricercar.config import (
     PROJECT_ROOT,
     BrowserConfig,
@@ -31,6 +32,20 @@ from ricercar.sources.base import UnknownSourceError
 from ricercar.sources.rutracker import RutrackerSource
 
 ExtraConfig = Callable[[str, str], Settings]
+
+
+@pytest.fixture(autouse=True)
+def without_local_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Hide ``config.local.yml`` from every test in this module.
+
+    CI has no local config file and a developer's checkout does — which makes any test
+    that reads it pass here and fail (or quietly assert nothing) there. What this module
+    checks is the repository's own configuration, so it is checked without the local
+    layer; the layering itself is tested with files the tests write themselves.
+    """
+    monkeypatch.setattr(config, "LOCAL_CONFIG_FILE", tmp_path / "config.local.yml")
+    monkeypatch.setattr(config, "_extra_config_files", [])
+    monkeypatch.setattr(config, "_settings", None)
 
 
 # ── Defaults ──────────────────────────────────────────────────────────────
@@ -102,16 +117,27 @@ def test_a_later_config_file_replaces_a_list_whole(extra_config: ExtraConfig) ->
 
 
 def test_the_repository_config_still_contributes(extra_config: ExtraConfig) -> None:
+    # The extra file stands on its own: it names a section, so it does not need the ones
+    # that only exist in a developer's config.local.yml.
     settings = extra_config(
         "sources.yml",
-        "sources:\n  rutracker:\n    tasks:\n      - text: Bach\n    random_choice: 1\n",
+        "sources:\n"
+        "  rutracker:\n"
+        "    categories:\n"
+        "      Opera: 794\n"
+        "    tasks:\n"
+        "      - text: Bach\n"
+        "        category: 794\n"
+        "    random_choice: 1\n",
     )
     rutracker = settings.sources["rutracker"]
 
     assert [task.text for task in rutracker.tasks] == ["Bach"]
     assert rutracker.random_choice == 1
-    assert rutracker.connect_url  # untouched, so it still comes from config.yml
-    assert rutracker.quota.limit_torrents_one_day >= 1
+    # values nobody overrode, so they come from the repository's config.yml
+    assert rutracker.connect_url == "http://localhost:9222"
+    assert rutracker.quota.limit_torrents_one_day == 50
+    assert settings.schedule.interval_minutes == 60
 
 
 def test_paths_are_derived_from_the_config(extra_config: ExtraConfig, tmp_path: Path) -> None:
@@ -270,3 +296,35 @@ def test_the_example_is_a_valid_configuration() -> None:
     assert settings.tasks and settings.tasks[0].text
     assert settings.login.username == ""
     assert settings.selectors_file is None
+
+
+# ── The config a run loads ────────────────────────────────────────────────
+#
+# config.yml is loaded on every run, and on a fresh checkout — which is what CI builds —
+# it is the only config there is, because config.local.yml is gitignored. So it has to
+# stand on its own; a test in a developer's checkout has to say so without the local file,
+# which is what the module's `without_local_config` fixture takes care of.
+
+CONFIG = PROJECT_ROOT / "config" / "config.yml"
+
+
+def test_the_repository_config_is_a_valid_configuration() -> None:
+    data = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+
+    # The loader ignores unknown keys (`extra = "ignore"`), so a misspelled section would
+    # be dropped in silence — a test is the only thing that notices.
+    assert set(data) <= set(Settings.model_fields)
+    # The sections a run cannot do without
+    assert {"browser", "run", "diagnostics", "schedule", "sources"} <= set(data)
+
+    for name, section in data.items():
+        if name != "sources":
+            SECTIONS[name](**section)
+    SourceSettings(**_section(_section(data, "sources"), "rutracker"))
+
+    # …and the file alone gives a configuration a run could use
+    settings = Settings()
+    assert list(settings.sources) == ["rutracker"]
+    assert settings.sources["rutracker"].tasks == []
+    assert settings.sources["rutracker"].connect_url

@@ -86,8 +86,9 @@ commitlint:
 commitlint-message message:
     printf '%s\n' '{{message}}' | node node_modules/@commitlint/cli/cli.js
 
-# Check every commit in a range — what CI does for a push (see .github/workflows/ci.yml,
-# where a branch's first push is handled separately: it has no range to check)
+# Check every commit in a range — what CI does for a push or a pull request. A branch's
+# first push (the zero sha) and a force-push have no range to walk; the workflow checks
+# ancestry first and falls back to `just commitlint` for the tip
 commitlint-range from to:
     node node_modules/@commitlint/cli/cli.js --from {{from}} --to {{to}}
 

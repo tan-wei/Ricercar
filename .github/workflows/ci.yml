@@ -20,26 +20,30 @@ jobs:
     name: commit messages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       - run: npm ci
       - name: Check the pushed commits
-        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        if: github.event_name == 'push'
         env:
           FROM_SHA: ${{ github.event.before }}
           TO_SHA: ${{ github.sha }}
-        run: just commitlint-range "$FROM_SHA" "$TO_SHA"
-      # A branch's first push reports the zero sha as the "before" end: there is no range
-      # then, so only the tip commit is checked.
-      - name: Check the tip commit (first push to a branch)
-        if: github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000'
-        run: just commitlint
+        # A branch's first push reports the zero sha as the "before" end, and a force-push
+        # reports a commit that nothing points at any more (so the checkout never fetched
+        # it). Neither gives a range to walk, and in both cases the tip is what is new.
+        run: |
+          if git merge-base --is-ancestor "$FROM_SHA" "$TO_SHA" 2>/dev/null; then
+            just commitlint-range "$FROM_SHA" "$TO_SHA"
+          else
+            echo "$FROM_SHA is not an ancestor of $TO_SHA — checking the tip commit only"
+            just commitlint
+          fi
       - name: Check the pull request's commits
         if: github.event_name == 'pull_request'
         env:
@@ -51,11 +55,11 @@ jobs:
     name: lint, format and types
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       - run: just sync
       - run: just lint
       - run: just format-check
@@ -74,12 +78,12 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       - run: just sync
       - run: just test
 
@@ -87,15 +91,15 @@ jobs:
     name: coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.14"
           enable-cache: true
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       - run: just sync
       - run: just coverage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage
