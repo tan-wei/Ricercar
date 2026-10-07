@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# Runtime data
+data/
+/Torrents/
+log/
+
+# The Selenium-era tool this project was rewritten from: kept on disk for reference,
+# never in the repository (65 MiB database, exported cookies, a real config).
+legacy/
+
+# Config with secrets
+config/config.local.yml
+
+# Node tooling (commitlint only)
+node_modules/
+
+# Coverage
+.coverage
+coverage.xml
+
+# Cookie & state files
+cookie.pickle
+authors.json
+authors-temp.json
+authors-backup.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+tests/fixtures/generated/
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Session data from fixture capture (DO NOT COMMIT)
+tests/fixtures/storage/
+
+# But keep .gitkeep files in fixture dirs
+!tests/fixtures/**/.gitkeep
+
+# Logs
+*.log
