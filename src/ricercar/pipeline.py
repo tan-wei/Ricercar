@@ -591,9 +591,9 @@ class Runner:
                             # The quota (or --limit) said stop — that is a planned end,
                             # not an interrupted one.
                             return True
-                        if self.repo.has_url(hit.url):
+                        if (known := self.repo.stored(hit.url)) is not None:
                             outcome.known += 1
-                            log.debug("Already stored: {}", hit.url)
+                            log.debug("Already stored: {} — added {}", hit.url, known.add_date)
                             continue
                         progress.update(torrents_bar, description=f"  {hit.title[:48]}")
                         if await self._download_hit(source, topic_page, hit, outcome):
@@ -666,7 +666,19 @@ class Runner:
 
         if not self.repo.add(meta, path.read_bytes()):
             outcome.known += 1
-            log.info("Already stored (same content): {!r}", meta.name)
+            # The same content under a different topic is the case worth naming: the row
+            # that won is not the one this download came from, and when it was added is
+            # the answer to "why was this not stored?".
+            same = self.repo.stored_content(meta.md5)
+            if same is None:  # pragma: no cover - only when another writer won the race
+                log.info("Already stored (same content): {!r}", meta.name)
+            else:
+                log.info(
+                    "Already stored as {!r} — added {}: {}",
+                    same.name,
+                    same.add_date,
+                    same.url,
+                )
             return False
 
         outcome.stored += 1

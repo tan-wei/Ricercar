@@ -97,6 +97,55 @@ def test_an_unknown_topic_has_no_blob(repo: TorrentRepository) -> None:
     assert repo.has_md5("a" * 32) is False
 
 
+def test_what_is_stored_can_be_looked_up_with_its_date(repo: TorrentRepository) -> None:
+    repo.add(_meta(RUTRACKER_URL, "a" * 32, name="Bach - Brandenburg"), b"payload")
+
+    stored = repo.stored(RUTRACKER_URL)
+    assert stored is not None
+    assert stored.name == "Bach - Brandenburg"
+    assert stored.add_date[:4].isdigit()
+    assert repo.stored(OTHER_URL) is None
+
+
+def test_content_can_be_looked_up_by_its_md5(repo: TorrentRepository) -> None:
+    # The row that holds a md5 is not always the row the md5 arrived by, which is
+    # exactly what a log line about a skipped download needs to name.
+    repo.add(_meta(RUTRACKER_URL, "a" * 32, name="Bach - Brandenburg"), b"payload")
+
+    stored = repo.stored_content("a" * 32)
+    assert stored is not None
+    assert stored.url == RUTRACKER_URL
+    assert stored.add_date[:4].isdigit()
+    assert repo.stored_content("f" * 32) is None
+
+
+def test_the_skip_line_says_when_the_topic_was_stored_first(
+    repo: TorrentRepository, log_messages: list[str]
+) -> None:
+    repo.add(_meta(RUTRACKER_URL, "a" * 32), b"first")
+    stored = repo.stored(RUTRACKER_URL)
+    assert stored is not None
+
+    assert repo.add(_meta(RUTRACKER_URL, "a" * 32), b"second") is False
+
+    assert f"Already stored: {RUTRACKER_URL} — added {stored.add_date}" in log_messages
+
+
+def test_the_skip_line_names_the_topic_that_holds_the_same_content(
+    repo: TorrentRepository, log_messages: list[str]
+) -> None:
+    repo.add(_meta(RUTRACKER_URL, "a" * 32), b"payload")
+    stored = repo.stored_content("a" * 32)
+    assert stored is not None
+
+    assert repo.add(_meta(OTHER_URL, "a" * 32), b"payload") is False
+
+    assert (
+        f"Already stored as {stored.url} — added {stored.add_date} (the md5 is the same)"
+        in log_messages
+    )
+
+
 def test_add_many_reports_only_the_new_ones(repo: TorrentRepository) -> None:
     entries = [
         (_meta(RUTRACKER_URL, "a" * 32), b"first"),

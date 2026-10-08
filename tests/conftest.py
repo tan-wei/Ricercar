@@ -34,6 +34,25 @@ def quiet_logger() -> Iterator[None]:
     logger.remove()
 
 
+@pytest.fixture
+def log_messages() -> Iterator[list[str]]:
+    """Everything that gets logged while the test runs, one message per line.
+
+    For the lines that *are* the feature — a skip that says when the torrent was stored
+    first is only correct if the date is in it, and nothing else about the run would
+    notice it missing. Line endings are stripped, so a message can be compared whole.
+    """
+    messages: list[str] = []
+
+    def collect(message: object) -> None:
+        messages.append(str(message).rstrip("\n"))
+
+    logger.remove()
+    logger.add(collect, level="DEBUG", format="{message}")
+    yield messages
+    logger.remove()
+
+
 # ── Fixture data ──────────────────────────────────────────────────────────
 
 

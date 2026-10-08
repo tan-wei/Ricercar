@@ -7,8 +7,9 @@ start your browser as the README describes and they run too.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ import pytest
 
 from ricercar.config import QuotaConfig, SearchTask, Settings, SourceSettings
 from ricercar.history import TaskHistory
-from ricercar.models import TorrentMetadata
+from ricercar.models import SearchHit, TorrentMetadata
 from ricercar.pipeline import (
     PlannedSearch,
     Runner,
@@ -28,6 +29,7 @@ from ricercar.pipeline import (
     describe_task,
     run_sources,
 )
+from ricercar.progress import new_progress
 from ricercar.repository import TorrentRepository
 from ricercar.state import STATE_VERSION, task_key
 
@@ -268,6 +270,78 @@ def test_the_budget_subtracts_what_this_tracker_already_gave_today(
         repo.add(_meta("https://elsewhere.example/viewtopic.php?t=2", "b" * 32), b"y")
 
     assert _budget(_runner(run_config, source), source) == 4
+
+
+# ── Skipping what is already stored ───────────────────────────────────────
+
+
+class ReplaySource:
+    """A source that answers one task with a fixed page of hits.
+
+    As much of the ``Source`` protocol as a task needs to reach the decision this
+    section is about — which rows are skipped — with no browser and no network: the
+    settings it reads, and a ``search`` that yields the page it was given, recording what
+    it was called with.
+    """
+
+    name = "fake"
+    host = "fake.example"
+
+    def __init__(self, settings: SourceSettings, hits: list[SearchHit]) -> None:
+        self.settings = settings
+        self.hits = hits
+        self.calls: list[tuple[object, SearchTask, int]] = []
+
+    async def search(
+        self, page: object, task: SearchTask, *, max_pages: int
+    ) -> AsyncIterator[list[SearchHit]]:
+        self.calls.append((page, task, max_pages))
+        yield list(self.hits)
+
+
+def _one_page(runner: Runner, source: ReplaySource, *, budget: int = 10) -> SourceOutcome:
+    """Run one search through the runner and report what it made of the hits.
+
+    The pages are ``None``: this source fetches nothing, so there is nothing to hand it.
+    """
+    outcome = SourceOutcome(source=source.name)
+    plan = PlannedSearch(task=SearchTask(text="Bach"), origin="text: bach", label="text: Bach")
+    with new_progress() as progress, runner.repo:
+        asyncio.run(
+            runner._run_task(
+                source,
+                plan,
+                None,
+                None,
+                budget,
+                outcome,
+                progress,
+                progress.add_task("torrents"),
+            )
+        )
+    return outcome
+
+
+def test_a_row_that_is_already_stored_is_logged_with_when_it_was_stored(
+    run_config: Settings, log_messages: list[str]
+) -> None:
+    # The point of the line is to answer "why was this not downloaded?": it has to say
+    # when the database got it, not just that it has it.
+    url = "https://fake.example/viewtopic.php?t=1"
+    with TorrentRepository(run_config.db_path) as repo:
+        repo.add(_meta(url, "a" * 32), b"payload")
+        stored = repo.stored(url)
+    assert stored is not None
+    source = ReplaySource(_settings(), [SearchHit(topic_id="1", title="Bach", url=url)])
+
+    outcome = _one_page(_runner(run_config, source), source)
+
+    assert outcome.known == 1
+    assert outcome.downloaded == 0  # skipped before anything was fetched
+    assert f"Already stored: {url} — added {stored.add_date}" in log_messages
+    # The runner asked for one page of the planned task, and this source has nothing to
+    # do with the page object it was handed.
+    assert source.calls == [(None, SearchTask(text="Bach"), source.settings.max_pages)]
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────

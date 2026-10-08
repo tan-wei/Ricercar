@@ -78,6 +78,9 @@ _INSERT_URL_IGNORING_DUPES = (
 _INSERT_BLOB = "INSERT INTO torrent_table (url, torrent_file) VALUES (?, ?);"
 _SELECT_URL = "SELECT add_date FROM url_table WHERE url = ?;"
 _SELECT_MD5 = "SELECT url FROM url_table WHERE md5 = ?;"
+_STORED_COLUMNS = "url, name, download_size, md5, add_date"
+_SELECT_STORED_URL = f"SELECT {_STORED_COLUMNS} FROM url_table WHERE url = ?;"
+_SELECT_STORED_MD5 = f"SELECT {_STORED_COLUMNS} FROM url_table WHERE md5 = ?;"
 # A range on the text date, not `DATE(add_date) = DATE(...)`: the format is
 # `YYYY-MM-DD HH:MM:SS`, so today's rows are a printable range — and unlike a function
 # on the column, a range uses idx_url_table_add_date. Both bounds are inclusive/exclusive
@@ -351,6 +354,24 @@ class TorrentRepository:
         """Whether this content (whole-file MD5) is already stored."""
         return self._db.execute(_SELECT_MD5, (md5,)).fetchone() is not None
 
+    def stored(self, url: str) -> StoredTorrent | None:
+        """The row this topic URL is stored as, or ``None`` when it is not stored.
+
+        :meth:`has_url` answers "have we got it?"; this answers "what have we got, and
+        since when?", which is what a log line about skipping something should say.
+        """
+        row = self._db.execute(_SELECT_STORED_URL, (url,)).fetchone()
+        return None if row is None else StoredTorrent(**dict(row))
+
+    def stored_content(self, md5: str) -> StoredTorrent | None:
+        """The row this content is stored as, or ``None``.
+
+        The same content can arrive under another topic URL — that is the case where
+        naming the row already held is worth more than naming the one being skipped.
+        """
+        row = self._db.execute(_SELECT_STORED_MD5, (md5,)).fetchone()
+        return None if row is None else StoredTorrent(**dict(row))
+
     def recent(self, limit: int = 20) -> list[StoredTorrent]:
         """The most recently added torrents, newest first."""
         rows = self._db.execute(
@@ -379,11 +400,19 @@ class TorrentRepository:
         """Store one torrent; ``False`` when it is already known.
 
         Both the topic URL and the content MD5 are checked, so the same content
-        re-released under a second topic URL is skipped as well.
+        re-released under a second topic URL is skipped as well. Either way the line
+        logged says which row is in the way, and when it was added.
         """
         log = get_logger()
-        if (known := self.has_url(meta.url)) or self.has_md5(meta.md5):
-            log.debug("Already stored ({}): {}", "url" if known else "md5", meta.url)
+        if (stored := self.stored(meta.url)) is not None:
+            log.debug("Already stored: {} — added {}", stored.url, stored.add_date)
+            return False
+        if (same := self.stored_content(meta.md5)) is not None:
+            log.debug(
+                "Already stored as {} — added {} (the md5 is the same)",
+                same.url,
+                same.add_date,
+            )
             return False
 
         try:

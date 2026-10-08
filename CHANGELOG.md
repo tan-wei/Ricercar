@@ -28,6 +28,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **A skipped torrent now says when it was stored first.** "Already stored: <url>" became
+  `Already stored: <url> — added 2020-04-05 11:46:30`, and the case where the *content* is
+  known under another topic (`md5` matched after the download) names that row instead:
+  `Already stored as 'Bach — Cantatas' — added … : <url>`. This is the legacy tool's
+  "is already added in …" line, and the answer to "why was this not downloaded?" — the two
+  repository lookups behind it (`stored(url)`, `stored_content(md5)`) return the whole row,
+  not just whether something is there. The log file captures every level, so the line is
+  there whatever `log.level` is set to; only the console is level-dependent.
 - **`just migrate` imports the database where the configuration says it is, in place.** Its
   argument is optional now, and `--target` and `--replace` are gone: the source is
   `database.path` — the file a run uses — and the *same* file, with the same name, is what
@@ -37,6 +45,15 @@ All notable changes to this project are documented here. The format follows
   database that has already been imported reports that there is nothing to import rather
   than failing — so the command can be run twice. Naming a file still imports one kept
   elsewhere, into the configured database, and the copy is made with a progress bar.
+- **Rows the current schema cannot take no longer abort the import.** A legacy database can
+  hold the same url twice (a topic stored again — measured on a real 80,691-row file, whose
+  `PRAGMA integrity_check` reports 1,296 rows missing from its primary-key index, which is
+  why its own duplicate check had stopped seeing them) or the same content under two urls.
+  The import now keeps the earliest row of each and reports how many it left behind,
+  instead of failing with `UNIQUE constraint failed: url_table.md5`; the fingerprint it
+  verifies against is the source as it should come out, not the source as it is. A NULL
+  where the schema requires a value is still a hard stop, because there is no way to guess
+  which row was meant.
 - The `justfile` works on Linux and macOS as well as Windows. The recipe that launches the
   browser now has a `[unix]` and a `[windows]` variant (detaching a browser differs per
   platform), it defaults to the platform's usual binary, and `just logs` asks `just` for the
