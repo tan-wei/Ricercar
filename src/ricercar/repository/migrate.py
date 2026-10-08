@@ -75,17 +75,91 @@ Batching exists for the progress bar as much as for memory: a single
 report, while batches let the bar advance and keep each transaction small.
 """
 
+_REQUIRED_SOURCE_TABLES = ("url_table", "torrent_table")
+
+_REQUIRED_URL_COLUMNS = ("url", "name", "download_size", "md5", "add_date")
+"""Columns ``url_table`` may not leave NULL, in the schema this imports into."""
+
+# ── Which rows the current schema can hold ────────────────────────────────
+#
+# A legacy database can hold rows the constraints of the current schema reject, in two
+# ways, and neither is a reason to refuse the import:
+#
+# * **The same url twice** — a topic stored again later, identical in name, size and
+#   content, with a later add_date. The legacy tool deduplicated through its
+#   primary-key index ("SELECT url FROM url_table WHERE url = ?"), so once the index lost
+#   an entry it could no longer see that row and added the topic again. A file whose
+#   index no longer matches its rows is damaged; ``PRAGMA integrity_check`` reports it,
+#   and every index-based query in it agrees with the index rather than the table.
+# * **One md5 under two urls** — the same content posted in two sections, which
+#   ``md5 UNIQUE`` allows only once.
+#
+# Both are resolved the way an intact database would have resolved them: the earliest row
+# wins, since that is the one a working index would have pointed at and the one a
+# duplicate-avoiding tool would have kept. The rows that lose are counted and reported,
+# and the source itself is never modified.
+#
+# ``NOT INDEXED`` throughout is not decoration: it is what makes these queries see the
+# table rather than the damaged index. Grouping by url through that index would report
+# every url as unique — the very mistake that produced the duplicates.
+#
+# The keep sets are materialised once, because a per-batch rule cannot work: two rows
+# sharing a url can straddle a batch boundary, and then both would look like the first
+# of their group.
+
+_KEEP_SETS = (
+    f"""
+    CREATE TEMP TABLE keep_rowid AS
+    SELECT u.rid AS rid FROM
+        (SELECT MIN(rowid) AS rid FROM {SOURCE_ALIAS}.url_table NOT INDEXED GROUP BY url) AS u
+    JOIN
+        (SELECT MIN(rowid) AS rid FROM {SOURCE_ALIAS}.url_table NOT INDEXED GROUP BY md5) AS m
+        ON m.rid = u.rid;
+    """,
+    "CREATE INDEX keep_rowid_idx ON keep_rowid (rid);",
+    f"""
+    CREATE TEMP TABLE keep_url AS
+    SELECT url FROM {SOURCE_ALIAS}.url_table NOT INDEXED
+    WHERE rowid IN (SELECT rid FROM keep_rowid);
+    """,
+    "CREATE INDEX keep_url_idx ON keep_url (url);",
+    f"""
+    CREATE TEMP TABLE keep_blob AS
+    SELECT MIN(rowid) AS rid FROM {SOURCE_ALIAS}.torrent_table NOT INDEXED
+    WHERE url IN (SELECT url FROM keep_url)
+    GROUP BY url;
+    """,
+    "CREATE INDEX keep_blob_idx ON keep_blob (rid);",
+)
+
+_COUNT_SOURCE_URLS = f"SELECT COUNT(*) FROM {SOURCE_ALIAS}.url_table NOT INDEXED;"
+_COUNT_SOURCE_BLOBS = f"""
+SELECT COUNT(*), SUM(torrent_file IS NULL) FROM {SOURCE_ALIAS}.torrent_table NOT INDEXED;
+"""
+_COUNT_URL_NULLS = f"""
+SELECT COUNT(*) FROM {SOURCE_ALIAS}.url_table NOT INDEXED
+WHERE {" OR ".join(f"{column} IS NULL" for column in _REQUIRED_URL_COLUMNS)};
+"""
+
+_COUNT_KEPT_URLS = f"""
+SELECT COUNT(*), COUNT(DISTINCT md5), MIN(add_date), MAX(add_date)
+FROM {SOURCE_ALIAS}.url_table NOT INDEXED WHERE rowid IN (SELECT rid FROM keep_rowid);
+"""
+_COUNT_KEPT_BLOBS = f"""
+SELECT COUNT(*), COALESCE(SUM(LENGTH(torrent_file)), 0)
+FROM {SOURCE_ALIAS}.torrent_table NOT INDEXED WHERE rowid IN (SELECT rid FROM keep_blob);
+"""
+
 _COPY_URLS = f"""
 INSERT INTO url_table (url, name, download_size, md5, add_date)
-SELECT url, name, download_size, md5, add_date FROM {SOURCE_ALIAS}.url_table
-WHERE rowid BETWEEN ? AND ?;
+SELECT url, name, download_size, md5, add_date FROM {SOURCE_ALIAS}.url_table NOT INDEXED
+WHERE rowid BETWEEN ? AND ? AND rowid IN (SELECT rid FROM keep_rowid);
 """
 _COPY_BLOBS = f"""
 INSERT INTO torrent_table (url, torrent_file)
-SELECT url, torrent_file FROM {SOURCE_ALIAS}.torrent_table
-WHERE rowid BETWEEN ? AND ?;
+SELECT url, torrent_file FROM {SOURCE_ALIAS}.torrent_table NOT INDEXED
+WHERE rowid BETWEEN ? AND ? AND rowid IN (SELECT rid FROM keep_blob);
 """
-_REQUIRED_SOURCE_TABLES = ("url_table", "torrent_table")
 
 
 class NothingToImportError(ValueError):
@@ -95,6 +169,31 @@ class NothingToImportError(ValueError):
     it would be work with no result. Reported as "nothing to do" rather than as an
     error, which is what makes running the import twice harmless.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class Plan:
+    """The rows an import will take from a source, and the ones it cannot hold.
+
+    ``expected`` is the fingerprint of what the copy must contain once the rows the
+    current constraints reject have been left behind; comparing the copy against it is
+    what proves the copy is complete. ``source_*`` are the source's raw counts, so the
+    difference can be reported rather than discovered later.
+    """
+
+    source_rows: int
+    source_blobs: int
+    expected: Fingerprint
+
+    @property
+    def dropped_rows(self) -> int:
+        """Rows left behind: the same url, or the same content under another url."""
+        return self.source_rows - self.expected.torrents
+
+    @property
+    def dropped_blobs(self) -> int:
+        """Blobs left behind — those of the rows left behind, and no others."""
+        return self.source_blobs - self.expected.blobs
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,14 +225,13 @@ class Fingerprint:
         return mismatches
 
 
-def fingerprint(conn: sqlite3.Connection, schema: str = "main") -> Fingerprint:
-    """Summarise the torrent tables of *schema* (``main`` or an attached alias)."""
+def fingerprint(conn: sqlite3.Connection) -> Fingerprint:
+    """Summarise the torrent tables of the database *conn* is open on."""
     urls = conn.execute(
-        f"SELECT COUNT(*), COUNT(DISTINCT md5), MIN(add_date), MAX(add_date)"
-        f" FROM {schema}.url_table;"
+        "SELECT COUNT(*), COUNT(DISTINCT md5), MIN(add_date), MAX(add_date) FROM url_table;"
     ).fetchone()
     blobs = conn.execute(
-        f"SELECT COUNT(*), COALESCE(SUM(LENGTH(torrent_file)), 0) FROM {schema}.torrent_table;"
+        "SELECT COUNT(*), COALESCE(SUM(LENGTH(torrent_file)), 0) FROM torrent_table;"
     ).fetchone()
     return Fingerprint(
         torrents=int(urls[0]),
@@ -257,8 +355,13 @@ def attach_source(conn: sqlite3.Connection, source: Path) -> None:
 
 
 def _rowid_bounds(conn: sqlite3.Connection, table: str) -> tuple[int, int]:
-    """The rowid range the source table occupies (0, 0 when it is empty)."""
-    row = conn.execute(f"SELECT MIN(rowid), MAX(rowid) FROM {SOURCE_ALIAS}.{table};").fetchone()
+    """The rowid range the source table occupies (0, 0 when it is empty).
+
+    ``NOT INDEXED``, so the range comes from the table — which is where the rows are.
+    """
+    row = conn.execute(
+        f"SELECT MIN(rowid), MAX(rowid) FROM {SOURCE_ALIAS}.{table} NOT INDEXED;"
+    ).fetchone()
     return (int(row[0] or 0), int(row[1] or 0))
 
 
@@ -294,6 +397,81 @@ def _sidecars(path: Path) -> list[Path]:
     return [Path(f"{path}{suffix}") for suffix in SIDECAR_SUFFIXES]
 
 
+def plan_source(conn: sqlite3.Connection, *, progress: Progress | None = None) -> Plan:
+    """Work out which rows of the attached source the current schema can hold.
+
+    Builds the keep sets (see the note above :data:`_KEEP_SETS`) and returns the
+    fingerprint the copy has to match once the rows that lose have been left behind.
+
+    Raises:
+        ValueError: the source holds rows the schema cannot take at all — a NULL in a
+            column that may not be empty. Duplicates are resolved, not refused; a NULL
+            is a defect with no sensible resolution.
+    """
+    log = get_logger()
+    with phase(progress, "Deciding which rows to keep"):
+        for statement in _KEEP_SETS:
+            conn.execute(statement)
+
+        source_rows = int(conn.execute(_COUNT_SOURCE_URLS).fetchone()[0])
+        source_blobs, blank_blobs = conn.execute(_COUNT_SOURCE_BLOBS).fetchone()
+        missing = int(conn.execute(_COUNT_URL_NULLS).fetchone()[0])
+        if missing or blank_blobs:
+            msg = (
+                f"the source has rows the current schema cannot hold: "
+                f"{missing} row(s) of url_table are missing "
+                f"{', '.join(_REQUIRED_URL_COLUMNS)}"
+                f"{f' and {blank_blobs} blob(s) have no content' if blank_blobs else ''}. "
+                f"Those are defects rather than duplicates, so nothing was imported."
+            )
+            raise ValueError(msg)
+
+        urls = conn.execute(_COUNT_KEPT_URLS).fetchone()
+        blobs = conn.execute(_COUNT_KEPT_BLOBS).fetchone()
+
+    expected = Fingerprint(
+        torrents=int(urls[0]),
+        distinct_md5=int(urls[1]),
+        first_added=urls[2],
+        last_added=urls[3],
+        blobs=int(blobs[0]),
+        blob_bytes=int(blobs[1]),
+    )
+    plan = Plan(source_rows=source_rows, source_blobs=int(source_blobs), expected=expected)
+    if plan.dropped_rows:
+        copies = _same_url_again(conn)
+        log.warning(
+            "The source holds {} row(s) the current schema cannot take: {} of them are "
+            "the same url stored again (a topic added a second time — what happens when a "
+            "legacy file's primary-key index no longer matches its rows, so its own "
+            "duplicate check stops seeing them) and {} are the same content under another "
+            "url. Kept the earliest of each, left {} blob(s) behind with them, and kept a "
+            "copy of the source as it was.",
+            plan.dropped_rows,
+            copies,
+            plan.dropped_rows - copies,
+            plan.dropped_blobs,
+        )
+    return plan
+
+
+def _same_url_again(conn: sqlite3.Connection) -> int:
+    """How many of the rows being left behind are a copy of a url that was kept.
+
+    The rest were left behind because their *content* is already there under a different
+    url, which the log tells apart — they are different things to look at if the numbers
+    are ever surprising.
+    """
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) FROM {SOURCE_ALIAS}.url_table NOT INDEXED
+        WHERE rowid NOT IN (SELECT rid FROM keep_rowid)
+          AND url IN (SELECT url FROM keep_url);
+        """
+    ).fetchone()
+    return int(row[0])
+
+
 def _discard(path: Path) -> None:
     """Delete a database file and whatever SQLite left beside it."""
     path.unlink(missing_ok=True)
@@ -309,8 +487,10 @@ def migrate(
 ) -> Fingerprint:
     """Copy every row of *source* into a database at *target*, keeping a copy of what was there.
 
-    Returns the fingerprint of the copied data; the source fingerprint is compared
-    against it before returning, so a truncated copy cannot pass unnoticed.
+    Returns the fingerprint of the copied data; the fingerprint the copy has to hold —
+    the source's rows minus the ones the current constraints cannot take, which
+    :func:`plan_source` works out — is compared against it before returning, so a
+    truncated copy cannot pass unnoticed.
 
     An existing *target* is copied aside first (:func:`keep_a_copy`) — that copy is
     never deleted, so nothing depends on the import being right. The import itself is
@@ -326,7 +506,8 @@ def migrate(
 
     Raises:
         FileNotFoundError: *source* is not a file.
-        ValueError: *source* is not a torrent database.
+        ValueError: *source* is not a torrent database, or holds rows the current schema
+            cannot take at all (a NULL where a value is required).
         NothingToImportError: *source* is already on the current schema.
     """
     log = get_logger()
@@ -351,8 +532,8 @@ def migrate(
         ensure_schema(conn, staging)
         attach_source(conn, source)
         try:
-            with phase(progress, "Reading the source"):
-                expected = fingerprint(conn, SOURCE_ALIAS)
+            plan = plan_source(conn, progress=progress)
+            expected = plan.expected
             log.info("Source: {}", expected.describe())
 
             with phase(progress, "Importing torrent metadata", expected.torrents) as task:
@@ -383,10 +564,11 @@ def migrate(
     os.replace(staging, target)
 
     log.info(
-        "Migrated to {} in {:.1f}s: {}",
+        "Migrated to {} in {:.1f}s: {}{}",
         target,
         time.monotonic() - started,
         actual.describe(),
+        f" (out of {plan.source_rows} source rows)" if plan.dropped_rows else "",
     )
     return actual
 
@@ -444,6 +626,17 @@ def main(argv: list[str] | None = None) -> int:
         # Not a failure: running the import twice is meant to be harmless.
         log.info("{}", exc)
         return 0
+    except sqlite3.IntegrityError as exc:
+        # The import refuses rows the current schema cannot take rather than dropping
+        # them; a constraint that still fires is a defect in the source, and it deserves
+        # the reason rather than a traceback.
+        log.error(
+            "{} holds rows the current schema rejects ({}). Nothing was written; the "
+            "database is untouched.",
+            source,
+            exc,
+        )
+        return 1
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         log.error("{}", exc)
         return 1

@@ -210,25 +210,66 @@ def test_an_import_that_is_not_needed_leaves_the_file_alone(
     assert len(_backups(path)) == copies  # no second copy of a file nothing happened to
 
 
-def test_a_source_that_breaks_the_new_constraints_aborts(
+def test_the_same_url_stored_twice_keeps_the_earlier_row(
     legacy_database: LegacyDatabase, tmp_path: Path
 ) -> None:
-    # The legacy schema had no unique index on md5, so such a database can legitimately
-    # hold the same content twice — and importing it must fail instead of silently
-    # dropping a row.
-    duplicated = (
-        ("https://rutracker.org/forum/viewtopic.php?t=1", "A", 10, "a" * 32, "2024-01-01 00:00:00"),
-        ("https://rutracker.org/forum/viewtopic.php?t=2", "B", 20, "a" * 32, "2024-01-02 00:00:00"),
+    # What a damaged primary-key index produces: the legacy tool deduplicated through
+    # that index, so once an entry went missing it re-added a topic it could no longer
+    # see. The row that survives is the one a working index would have pointed at.
+    url = "https://rutracker.org/forum/viewtopic.php?t=1"
+    rows = (
+        (url, "A", 10, "a" * 32, "2024-01-01 00:00:00"),
+        (url, "A", 10, "a" * 32, "2024-06-01 00:00:00"),
     )
-    source = legacy_database.create(tmp_path / "legacy.db", duplicated)
+    source = legacy_database.create(tmp_path / "legacy.db", rows)
     target = tmp_path / "torrents.db"
-    target.write_bytes(b"the target that must survive")
 
-    with pytest.raises(sqlite3.IntegrityError):
+    result = migrate(source, target)
+
+    assert result.torrents == 1
+    assert result.blobs == 1
+    assert _rows(target, "url_table") == [rows[0]]
+    assert _blob(target, url) == legacy_database.blob_for(url)
+
+
+def test_the_same_content_under_another_url_keeps_one_row(
+    legacy_database: LegacyDatabase, tmp_path: Path
+) -> None:
+    # `md5 UNIQUE` means the same content is stored once, whatever url it arrived by.
+    first = "https://rutracker.org/forum/viewtopic.php?t=1"
+    second = "https://rutracker.org/forum/viewtopic.php?t=2"
+    rows = (
+        (first, "A", 10, "a" * 32, "2024-01-01 00:00:00"),
+        (second, "B", 20, "a" * 32, "2024-02-01 00:00:00"),
+    )
+    source = legacy_database.create(tmp_path / "legacy.db", rows)
+    target = tmp_path / "torrents.db"
+
+    result = migrate(source, target)
+
+    assert result.torrents == 1
+    assert result.distinct_md5 == 1
+    assert _rows(target, "url_table") == [rows[0]]
+    # The blob of the row that lost goes with it, or the foreign key would have nothing
+    # to point at — and the copy has to verify, which it only does for the kept rows.
+    with contextlib.closing(connect(target)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM torrent_table;").fetchone()[0] == 1
+        assert conn.execute("PRAGMA foreign_key_check;").fetchall() == []
+
+
+def test_a_row_the_schema_cannot_take_at_all_is_refused(
+    legacy_database: LegacyDatabase, tmp_path: Path
+) -> None:
+    # A missing md5 is a defect, not a duplicate: there is no sensible way to pick which
+    # of two rows to keep, so the import says so instead of guessing.
+    rows = (("https://rutracker.org/forum/viewtopic.php?t=1", "A", 10, None, "2024-01-01"),)
+    source = legacy_database.create(tmp_path / "legacy.db", rows)
+    target = tmp_path / "torrents.db"
+
+    with pytest.raises(ValueError, match="cannot hold"):
         migrate(source, target)
 
-    assert target.read_bytes() == b"the target that must survive"
-    assert not Path(f"{target}{STAGING_SUFFIX}").exists()
+    assert not target.exists()
 
 
 def test_a_fingerprint_notices_what_a_copy_lost() -> None:
