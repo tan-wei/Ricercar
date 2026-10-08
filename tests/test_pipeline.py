@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Callable
 from datetime import date, timedelta
 from pathlib import Path
@@ -21,13 +22,16 @@ import pytest
 from ricercar.config import QuotaConfig, SearchTask, Settings, SourceSettings
 from ricercar.history import TaskHistory
 from ricercar.models import SearchHit, TorrentMetadata
+from ricercar.parser.torrent import parse_file
 from ricercar.pipeline import (
+    PAUSE_TICK,
     PlannedSearch,
     Runner,
     RunOutcome,
     SourceOutcome,
     describe_task,
     run_sources,
+    wait_between_pages,
 )
 from ricercar.progress import new_progress
 from ricercar.repository import TorrentRepository
@@ -272,37 +276,52 @@ def test_the_budget_subtracts_what_this_tracker_already_gave_today(
     assert _budget(_runner(run_config, source), source) == 4
 
 
-# ── Skipping what is already stored ───────────────────────────────────────
+# ── Skipping what is already stored, and pacing what is not ───────────────
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class ReplaySource:
-    """A source that answers one task with a fixed page of hits.
+    """A source that answers one task with pages of hits it was given.
 
-    As much of the ``Source`` protocol as a task needs to reach the decision this
-    section is about — which rows are skipped — with no browser and no network: the
-    settings it reads, and a ``search`` that yields the page it was given, recording what
-    it was called with.
+    As much of the ``Source`` protocol as a task needs — which rows are skipped, and how
+    fast the pages are walked — with no browser and no network: the settings it reads, a
+    ``search`` that yields the pages, and a ``fetch_torrent`` that hands over a real
+    saved ``.torrent`` so a store can genuinely happen.
     """
 
     name = "fake"
     host = "fake.example"
 
-    def __init__(self, settings: SourceSettings, hits: list[SearchHit]) -> None:
+    def __init__(self, settings: SourceSettings, pages: list[list[SearchHit]]) -> None:
         self.settings = settings
-        self.hits = hits
+        self.pages = pages
         self.calls: list[tuple[object, SearchTask, int]] = []
+        self.fetched: list[tuple[object, str]] = []
 
     async def search(
         self, page: object, task: SearchTask, *, max_pages: int
     ) -> AsyncIterator[list[SearchHit]]:
         self.calls.append((page, task, max_pages))
-        yield list(self.hits)
+        for hits in self.pages:
+            yield list(hits)
+
+    async def fetch_torrent(self, page: object, hit: SearchHit, directory: object) -> Any:
+        """Hand over the saved fixture, as if it had been downloaded from *hit*."""
+        from ricercar.models import TopicInfo
+
+        self.fetched.append((page, hit.url))
+        path = Path(str(directory)) / f"{hit.topic_id}.torrent"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((FIXTURES / "torrents" / "sample.torrent").read_bytes())
+        return TopicInfo(url=hit.url, title=hit.title, downloadable=True), path
 
 
 def _one_page(runner: Runner, source: ReplaySource, *, budget: int = 10) -> SourceOutcome:
     """Run one search through the runner and report what it made of the hits.
 
-    The pages are ``None``: this source fetches nothing, so there is nothing to hand it.
+    The pages are ``None``: this source fetches nothing itself, so there is nothing to
+    hand it.
     """
     outcome = SourceOutcome(source=source.name)
     plan = PlannedSearch(task=SearchTask(text="Bach"), origin="text: bach", label="text: Bach")
@@ -332,7 +351,7 @@ def test_a_row_that_is_already_stored_is_logged_with_when_it_was_stored(
         repo.add(_meta(url, "a" * 32), b"payload")
         stored = repo.stored(url)
     assert stored is not None
-    source = ReplaySource(_settings(), [SearchHit(topic_id="1", title="Bach", url=url)])
+    source = ReplaySource(_settings(), [[SearchHit(topic_id="1", title="Bach", url=url)]])
 
     outcome = _one_page(_runner(run_config, source), source)
 
@@ -342,6 +361,155 @@ def test_a_row_that_is_already_stored_is_logged_with_when_it_was_stored(
     # The runner asked for one page of the planned task, and this source has nothing to
     # do with the page object it was handed.
     assert source.calls == [(None, SearchTask(text="Bach"), source.settings.max_pages)]
+
+
+# ── Pacing what the tracker sees ──────────────────────────────────────────
+
+
+class FakeClock:
+    """A clock that only moves when something sleeps on it.
+
+    Waiting is the one thing a test cannot do for real at any interesting scale, so the
+    wait takes its clock and its sleep from the caller (see
+    :func:`ricercar.pipeline.wait_between_pages`) and this is what a test hands it.
+    """
+
+    def __init__(self) -> None:
+        self.moment = 0.0
+        self.slept = 0.0
+
+    def now(self) -> float:
+        return self.moment
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept += seconds
+        self.moment += seconds
+
+
+def test_the_wait_before_the_next_page_is_the_configured_delay() -> None:
+    clock = FakeClock()
+    ticks: list[float] = []
+
+    waited = asyncio.run(
+        wait_between_pages(
+            30.0,
+            stop=lambda: False,
+            on_tick=ticks.append,
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    assert waited == 30.0
+    assert clock.slept == 30.0
+    assert ticks == sorted(ticks, reverse=True)  # a countdown, not a count-up
+    assert ticks[0] == 30.0
+    assert ticks[-1] <= PAUSE_TICK
+
+
+def test_a_stop_ends_the_wait_early() -> None:
+    # Ctrl-C must not sit out a minute of someone's life.
+    clock = FakeClock()
+
+    waited = asyncio.run(
+        wait_between_pages(
+            60.0,
+            stop=lambda: clock.now() >= 1.0,
+            sleep=clock.sleep,
+            now=clock.now,
+        )
+    )
+
+    assert waited == 1.0
+    assert clock.slept == 1.0
+
+
+@pytest.fixture
+def paced(run_config: Settings, extra_config: ExtraConfig) -> Callable[[float], Settings]:
+    """`run_config` — temp database and all — with the given page delay layered on top."""
+
+    def with_delay(seconds: float) -> Settings:
+        settings = extra_config(
+            f"paced-{seconds}.yml",
+            f"sources:\n  rutracker:\n    quota:\n      page_delay_seconds: {seconds}\n",
+        )
+        # The delay is what this layers; the temp database is what it must not disturb.
+        assert settings.db_path == run_config.db_path
+        return settings
+
+    return with_delay
+
+
+def test_a_page_that_stored_something_is_paced_before_the_next(
+    paced: Callable[[float], Settings], log_messages: list[str]
+) -> None:
+    # One hit, on two pages: the first stores it, the second finds the content already
+    # there. The delay is owed once — after the page that made the tracker do work.
+    settings = paced(0.3)
+    hit = SearchHit(topic_id="1", title="Bach", url="https://fake.example/t=1")
+    source = ReplaySource(settings.sources["rutracker"], [[hit], [hit]])
+
+    started = time.monotonic()
+    outcome = _one_page(_runner(settings, source), source)
+    elapsed = time.monotonic() - started
+
+    assert outcome.stored == 1
+    assert outcome.known == 1
+    assert elapsed >= 0.3
+    # A wait that says nothing is indistinguishable from a hang.
+    assert any("Waiting 0.3s before the next page" in message for message in log_messages)
+
+
+def test_a_page_of_rows_we_already_have_is_not_paced(
+    paced: Callable[[float], Settings],
+) -> None:
+    # Nothing was asked of the tracker beyond the page that listed the row, so there is
+    # nothing to pace — which is what keeps the delay off a steady-state run. The delay
+    # here is deliberately huge: a run that waits it out fails this test, and takes two
+    # seconds proving it.
+    settings = paced(2.0)
+    url = "https://fake.example/t=1"
+    with TorrentRepository(settings.db_path) as repo:
+        repo.add(_meta(url, "a" * 32), b"payload")
+    source = ReplaySource(
+        settings.sources["rutracker"], [[SearchHit(topic_id="1", title="Bach", url=url)]]
+    )
+
+    started = time.monotonic()
+    outcome = _one_page(_runner(settings, source), source)
+
+    assert outcome.known == 1
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_page_of_rows_that_were_only_downloaded_is_still_paced(
+    paced: Callable[[float], Settings], log_messages: list[str]
+) -> None:
+    # The content is already here under another url, so neither row is stored — but both
+    # still cost a request, and the request rate is the thing that gets an account
+    # noticed. A page like this must not be the loophole in the delay.
+    settings = paced(0.3)
+    fixture = FIXTURES / "torrents" / "sample.torrent"
+    with TorrentRepository(settings.db_path) as repo:
+        repo.add(_meta("https://elsewhere.example/t=99", parse_file(fixture).md5), b"payload")
+    source = ReplaySource(
+        settings.sources["rutracker"],
+        [
+            [
+                SearchHit(topic_id="1", title="Bach", url="https://fake.example/t=1"),
+                SearchHit(topic_id="2", title="Bach again", url="https://fake.example/t=2"),
+            ]
+        ],
+    )
+
+    started = time.monotonic()
+    outcome = _one_page(_runner(settings, source), source)
+
+    assert outcome.stored == 0
+    assert outcome.downloaded == 2
+    assert outcome.known == 2
+    assert time.monotonic() - started >= 0.3
+    assert any("Waiting 0.3s before the next page" in message for message in log_messages)
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────

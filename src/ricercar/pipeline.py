@@ -18,11 +18,12 @@ stop at the daily quota — with three things done properly:
 from __future__ import annotations
 
 import asyncio
+import math
 import random
 import signal
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import FrameType
@@ -66,6 +67,42 @@ LISTED_STALE = 5
 The list is 5,969 tasks long in the real configuration, so a warning that named all of
 them would be a wall of text; ``ricercar tasks --stale`` prints every one of them.
 """
+
+PAUSE_TICK = 0.5
+"""Seconds between checks while waiting out ``quota.page_delay_seconds``.
+
+Short enough that an interrupt is noticed at once, long enough that the countdown is not
+redrawn thousands of times.
+"""
+
+
+async def wait_between_pages(
+    delay: float,
+    *,
+    stop: Callable[[], bool],
+    on_tick: Callable[[float], None] | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    now: Callable[[], float] = time.monotonic,
+) -> float:
+    """Wait out *delay* seconds, unless *stop* asks to give up first.
+
+    Returns the seconds actually waited. *on_tick* is handed the time left on every tick,
+    which is what puts a countdown on the progress line: a minute of silence looks like a
+    hang, and waiting out a minute of Ctrl-C is worse than the thing being guarded
+    against.
+
+    ``sleep`` and ``now`` are injectable so the wait can be tested without waiting (the
+    same shape :func:`ricercar.retry.call` uses for its backoff).
+    """
+    started = now()
+    deadline = started + delay
+    while (remaining := deadline - now()) > 0:
+        if stop():
+            break
+        if on_tick is not None:
+            on_tick(remaining)
+        await sleep(min(remaining, PAUSE_TICK))
+    return now() - started
 
 
 def describe_task(task: SearchTask) -> str:
@@ -558,7 +595,8 @@ class Runner:
         task = plan.task
         stored = 0
         logged_in_again = False
-        pages_bar = progress.add_task(f"  {describe_task(task)}", total=source.settings.max_pages)
+        pages_bar_label = f"  {describe_task(task)}"
+        pages_bar = progress.add_task(pages_bar_label, total=source.settings.max_pages)
 
         async def search_and_download() -> bool:
             nonlocal stored
@@ -566,9 +604,11 @@ class Runner:
             progress.update(pages_bar, completed=0)
             pages = source.search(results_page, task, max_pages=source.settings.max_pages)
             page_index = 0
+            label = pages_bar_label
 
             while True:
                 page_index += 1
+                asked_on_page = 0
                 # One chunk per results page: a page that fails keeps a trace that
                 # contains exactly that page, and a healthy page's trace (megabytes,
                 # with snapshots) is dropped instead of piling up for the whole task.
@@ -596,9 +636,18 @@ class Runner:
                             log.debug("Already stored: {} — added {}", hit.url, known.add_date)
                             continue
                         progress.update(torrents_bar, description=f"  {hit.title[:48]}")
+                        asked_on_page += 1
                         if await self._download_hit(source, topic_page, hit, outcome):
                             stored += 1
                             progress.advance(torrents_bar)
+
+                if asked_on_page:
+                    # This page asked the tracker for something, so pace what comes next —
+                    # the next page of this search, or the first page of the next task, both
+                    # of which are fetched where the loop starts again. A rejected download
+                    # counts: the request was made, and it is the request rate that gets an
+                    # account noticed. A hit we already have never reaches this counter.
+                    await self._wait_for_the_next_page(source, label, progress, pages_bar)
 
         try:
             while True:
@@ -619,6 +668,40 @@ class Runner:
                     )
         finally:
             progress.remove_task(pages_bar)
+
+    async def _wait_for_the_next_page(
+        self,
+        source: Source,
+        label: str,
+        progress: Progress,
+        pages_bar: TaskID,
+    ) -> None:
+        """Wait out ``quota.page_delay_seconds``, showing the countdown on the page bar.
+
+        Called after a page that asked the tracker for at least one torrent — see the
+        comment at the call site for why only that page waits. The countdown goes on the
+        pages bar because that is the line that would otherwise sit still, and a still
+        line for a minute looks like a hang. Ctrl-C ends the wait rather than sitting it
+        out.
+        """
+        delay = source.settings.quota.page_delay_seconds
+        if delay <= 0:
+            return
+
+        log = get_logger()
+        log.info("Waiting {}s before the next page (quota.page_delay_seconds)", delay)
+
+        def countdown(left: float) -> None:
+            progress.update(pages_bar, description=f"{label} — waiting {math.ceil(left)}s")
+
+        try:
+            await wait_between_pages(
+                delay,
+                stop=lambda: self.shutdown.requested,
+                on_tick=countdown,
+            )
+        finally:
+            progress.update(pages_bar, description=label)
 
     async def _download_hit(
         self,

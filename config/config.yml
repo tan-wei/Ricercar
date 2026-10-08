@@ -76,6 +76,11 @@ sources:
     max_pages: 50
     quota:
       limit_torrents_one_day: 50
+      # Wait this long before the next page, after a page that asked the tracker for a
+      # torrent — the tracker sees every request, and page-after-page at machine speed is
+      # what "too fast to be a person" looks like. A download that turns out to be
+      # duplicate content still counts. A page of rows the database already had makes no
+      # request beyond the one that fetched it, so it never waits. 0 (default): never wait.
 
 retry:
   max_attempts: 3

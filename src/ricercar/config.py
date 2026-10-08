@@ -141,10 +141,23 @@ class SearchTask(BaseModel):
 
 
 class QuotaConfig(BaseModel):
-    """Daily download quota."""
+    """What may be taken from one tracker per day, and how fast it may be taken."""
 
     limit_torrents_one_day: Annotated[int, Field(ge=0)] = 50
     """Maximum torrents to download per day."""
+
+    page_delay_seconds: Annotated[float, Field(ge=0, le=600)] = 0.0
+    """Seconds to wait before the next page, after a page that stored something.
+
+    The tracker sees every request a run makes, and a run that walks from page to page —
+    and from task to task — at machine speed is what "too fast to be a person" looks
+    like from the other side. Only a page that actually stored something waits: a page
+    of rows the database already had made no request beyond the one that fetched it, so
+    there is nothing to pace, and a steady-state run is not slowed down at all.
+
+    ``0`` (the default) does not wait. The wait is interruptible, so Ctrl-C does not sit
+    out the delay, and it is shown as a countdown on the search's progress line.
+    """
 
 
 class SourceSettings(BaseModel):

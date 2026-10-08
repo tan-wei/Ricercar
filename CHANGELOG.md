@@ -20,6 +20,17 @@ All notable changes to this project are documented here. The format follows
   a terminate signal to the process, so the profile is flushed rather than lost. The
   cookies live in that profile, so the session survives the shutdown: relaunching the same
   `--user-data-dir` comes back signed in.
+- **The pace can be configured.** `quota.page_delay_seconds` (default `0`, so nothing
+  changes unless you ask for it) waits that long before the next page, after a page that
+  asked the tracker for at least one torrent — the tracker sees every request, and page
+  after page at machine speed is what "too fast to be a person" looks like from the other
+  side. A download that turns out to be duplicate content still counts, since the request
+  was made; only a page of rows the database already had is never paced, because that page
+  makes no request beyond the one that fetched it. A page that was paced also covers the
+  gap to the next task. The countdown shows on the search's progress line, so a long delay
+  does not look like a hang, and Ctrl-C ends the wait instead of sitting it out. The wait is
+  interruptible and tested without waiting for it (see `wait_between_pages`), which is how
+  the new `tests/test_pipeline.py` cases cover both the pacing and its absence.
 - **Coverage is uploaded to Codecov by CI.** Each of the six test cells — `ubuntu-latest`
   and `windows-latest` × Python 3.12, 3.13, 3.14 — runs `just coverage` and uploads
   `coverage.xml` under a flag naming the cell, then keeps it as a build artifact: the same
