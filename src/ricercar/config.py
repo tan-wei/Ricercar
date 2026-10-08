@@ -68,18 +68,19 @@ class LogLevel(enum.StrEnum):
 class LoginConfig(BaseModel):
     """Credentials for one tracker account.
 
-    A login cannot always be automated — for a trackers behind Cloudflare every
-    ``login.php`` POST is blocked, so a human performs it in the browser (see
-    ``README.md``). This is also what happens when a session expires mid-run, so
-    the credentials are configured here as a pair.
+    Both fields are used: :func:`~ricercar.sources.rutracker.session.ensure_logged_in`
+    signs in for you when the session in the attached browser has expired — it fills the
+    login form and submits it. A login *cannot* always be automated (a captcha, or a
+    Cloudflare interstitial, needs a person), so if that attempt does not go through, the
+    run waits for a human in the browser window instead of failing.
     """
 
     username: str = ""
-    """Also used programmatically, to verify that the current session belongs to
-    the expected account."""
+    """The account's login name. Also used programmatically, to verify that the current
+    session belongs to the expected account."""
     password: str = ""
-    """Not sent automatically (the login POST is blocked); present because a session
-    expiry forces a manual login and the credentials belong together."""
+    """The account's password; typed into the login form when a session has to be
+    re-established. Lives in ``config.local.yml``, which is gitignored."""
 
 
 class BrowserConfig(BaseModel):
@@ -98,6 +99,14 @@ class BrowserConfig(BaseModel):
     """Timeout in ms for individual actions (click, fill, etc.)."""
     downloads_dir: str = str(DATA_DIR / "torrents")
     """Where downloaded .torrent files land."""
+    close_on_exit: bool = True
+    """Close the attached browser when the command finishes.
+
+    It is a graceful shutdown (see :func:`ricercar.browser.close_attached`), so the
+    profile keeps its cookies and the next launch is signed in again. Turn it off to
+    leave the window up — for instance because you browse in that same profile — and
+    close it yourself when you are done.
+    """
 
 
 class SearchTask(BaseModel):

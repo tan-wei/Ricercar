@@ -5,16 +5,19 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 
 from ricercar.config import SearchTask, SourceSettings
 from ricercar.sources.rutracker import RutrackerSource, parse_results, uploaders
 from ricercar.sources.rutracker.diagnose import diagnose_results, diagnose_topic
 from ricercar.sources.rutracker.search import next_page_url
 from ricercar.sources.rutracker.selectors import DEFAULT_SELECTORS, Selectors, load_selectors
+from ricercar.sources.rutracker.session import LoginOutcome, login_page_state
 from ricercar.sources.rutracker.topic import parse_topic
 
 RESULTS_URL = "https://rutracker.org/forum/tracker.php?search_id=abc&nm=Bach"
 TOPIC_URL = "https://rutracker.org/forum/viewtopic.php?t=1580744"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 CHALLENGE_HTML = "<html><body><h1>Just a moment...</h1></body></html>"
 LOGIN_HTML = '<html><body><form><input name="login_username"></form></body></html>'
@@ -106,6 +109,84 @@ def test_a_page_that_is_not_a_topic_is_recognised() -> None:
     issues = diagnose_topic(PLAIN_HTML)
 
     assert any("not a topic page" in issue for issue in issues)
+
+
+# ── The login page ────────────────────────────────────────────────────────
+
+
+def login_page(body: str) -> str:
+    """A login page shaped the way the site's own form is: two fields, a button."""
+    return (
+        "<html><body><form action='login.php' method='post'>"
+        "<table><tr><td>Логин</td><td>" + body + "</td></tr></table>"
+        "</form></body></html>"
+    )
+
+
+LOGIN_FIELDS = (
+    '<input type="text" name="login_username" id="login-username">'
+    '<input type="password" name="login_password" id="login-password">'
+    '<input type="submit" value="Вход">'
+)
+CAPTCHA_FIELDS = LOGIN_FIELDS + '<img src="captcha.php?sid=1"><input name="cap_code" type="text">'
+
+
+def test_the_login_form_is_recognised_as_such() -> None:
+    assert login_page_state(login_page(LOGIN_FIELDS)) == "form"
+
+
+def test_a_captcha_on_the_login_form_is_recognised() -> None:
+    # Nothing automated can solve this, so the outcome has to change with the page.
+    assert login_page_state(login_page(CAPTCHA_FIELDS)) == "captcha"
+
+
+def test_a_real_cloudflare_interstitial_is_recognised() -> None:
+    # A page captured from the live site: the tracker serves this to a cookie-less client,
+    # and its title is "请稍候…" — the markers are the structural ones, not the wording.
+    html = (FIXTURES / "html" / "login" / "challenge.html").read_text(encoding="utf-8")
+
+    assert login_page_state(html) == "challenge"
+
+
+def test_a_page_that_is_neither_is_not_mistaken_for_a_form() -> None:
+    assert login_page_state(PLAIN_HTML) == "other"
+
+
+def real_login_page() -> str:
+    """The login page as the site actually serves it (captured while signed out)."""
+    return (FIXTURES / "html" / "login" / "login.html").read_text(encoding="utf-8")
+
+
+def test_the_real_login_page_is_recognised_as_a_form() -> None:
+    assert login_page_state(real_login_page()) == "form"
+
+
+def test_every_form_on_the_real_login_page_has_the_fields_it_needs() -> None:
+    # The header carries a second, compact login box that stays hidden until you click
+    # "Вход", so the plain selectors match twice — and the one to fill is whichever is
+    # visible. What has to hold either way is that the fields and the submit control sit
+    # together in the same form, which is where `log_in` looks for the button.
+    soup = BeautifulSoup(real_login_page(), "lxml")
+
+    forms = [field.find_parent("form") for field in soup.select(DEFAULT_SELECTORS.login_username)]
+
+    assert len(forms) == 2
+    for form in forms:
+        assert form is not None
+        for selector in (
+            DEFAULT_SELECTORS.login_username,
+            DEFAULT_SELECTORS.login_password,
+            DEFAULT_SELECTORS.login_submit,
+        ):
+            assert len(form.select(selector)) == 1, selector
+
+
+def test_the_outcomes_are_all_described() -> None:
+    # The value is logged verbatim when an automatic login fails, so every one of them has
+    # to read as a sentence.
+    for outcome in LoginOutcome:
+        assert outcome.value and outcome.value[0].islower()
+    assert LoginOutcome.SIGNED_IN.value == "signed in"
 
 
 # ── Selectors ─────────────────────────────────────────────────────────────

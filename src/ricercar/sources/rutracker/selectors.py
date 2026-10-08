@@ -30,8 +30,16 @@ class Selectors:
 
     logged_in: str = "#logged-in-username"
     """Element holding the name of the signed-in user."""
-    login_form: str = 'input[name="login_username"]'
+    login_url: str = "https://rutracker.org/forum/login.php"
+    """The login form."""
+    login_username: str = 'input[name="login_username"]'
     """Login field — its presence means the session is gone (used by the diagnosis)."""
+    login_password: str = 'input[name="login_password"]'
+    """Password field, right next to it."""
+    login_submit: str = 'input[type="submit"], button[type="submit"]'
+    """The form's own submit control, looked up inside the login form."""
+    login_captcha: str = 'input[name="cap_code"], img[src*="captcha" i], [class*="captcha" i]'
+    """Anything that says a person has to type a code — the automatic login gives up."""
     results_count: str = r"Результатов поиска:\s*(\d+)"
     """Regex matching the results header, capturing how many hits the search has."""
     result_link: str = "a[data-topic_id]"

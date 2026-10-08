@@ -7,6 +7,11 @@ browser:
   navigation_timeout: 30000
   action_timeout: 15000
   # downloads_dir defaults to data/torrents
+  #
+  # close_on_exit (default true) closes that browser again when a command finishes. The
+  # close is graceful, so the profile keeps its cookies and the next launch is signed in
+  # again — set it to false to leave the window up instead (e.g. because you browse in
+  # the same profile).
 
 # A run: what it redoes, and where it keeps its notes.
 run:
@@ -41,7 +46,10 @@ sources:
     #   just browser          (or the raw command, see README "Cloudflare")
     connect_url: "http://localhost:9222"
     login:
-      # Put the real credentials in config.local.yml, which is gitignored.
+      # Put the real credentials in config.local.yml, which is gitignored. Set both and a
+      # session that has expired is signed in again by itself; leave them empty and a lost
+      # session always waits for you to type it in (a captcha or a Cloudflare interstitial
+      # still can, whatever is configured).
       username: ""
       password: ""
     # The sections worth watching, name → the site's `f` id. A task that names no

@@ -183,7 +183,14 @@ def cli(argv: list[str] | None = None) -> None:
         return
 
     # ── Run ─────────────────────────────────────────────────────────────
-    raise SystemExit(_run_once(args) if args.once else _run_scheduled(args))
+    try:
+        code = _run_once(args) if args.once else _run_scheduled(args)
+    finally:
+        # The browser was only borrowed for the run: leave nothing behind, whatever way
+        # the run ended. Closing is graceful, so the signed-in profile — and its cookies —
+        # survives for next time.
+        _close_browsers(settings)
+    raise SystemExit(code)
 
 
 # ── Guards ────────────────────────────────────────────────────────────────
@@ -201,6 +208,29 @@ def _require_usable_database(settings: Settings) -> None:
     except DatabaseSchemaError as exc:
         get_logger().error("{}", exc)
         raise SystemExit(1) from exc
+
+
+def _close_browsers(settings: Settings) -> None:
+    """Close the browsers we attached to, so nothing is left running behind us.
+
+    One endpoint per configured source, deduplicated: two trackers can share a browser.
+    A browser that was never running is not an error — there is simply nothing to close.
+    """
+    from ricercar.browser import close_attached
+    from ricercar.sources import UnknownSourceError, get_source
+
+    if not settings.browser.close_on_exit:
+        get_logger().debug("browser.close_on_exit is off — leaving the browser running")
+        return
+
+    urls = set()
+    for name in settings.sources:
+        try:
+            urls.add(get_source(name, settings).settings.connect_url)
+        except UnknownSourceError as exc:  # pragma: no cover - config validation catches it
+            get_logger().debug("Not closing a browser for {}: {}", name, exc)
+    for url in sorted(urls):
+        asyncio.run(close_attached(url))
 
 
 # ── Subcommands ───────────────────────────────────────────────────────────

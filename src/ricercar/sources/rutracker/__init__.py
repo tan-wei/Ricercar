@@ -35,8 +35,11 @@ from ricercar.sources.rutracker.selectors import (
     load_selectors,
 )
 from ricercar.sources.rutracker.session import (
+    LoginOutcome,
     ensure_logged_in,
     is_logged_in,
+    log_in,
+    login_page_state,
 )
 from ricercar.sources.rutracker.topic import (
     DOWNLOAD_TIMEOUT,
@@ -63,6 +66,7 @@ class RutrackerSource:
         await ensure_logged_in(
             page,
             self.settings.login.username,
+            self.settings.login.password,
             timeout=timeout,
             selectors=self.selectors,
         )
@@ -134,6 +138,7 @@ class RutrackerSource:
 __all__ = [
     "DEFAULT_SELECTORS",
     "DOWNLOAD_TIMEOUT",
+    "LoginOutcome",
     "RutrackerSource",
     "Selectors",
     "apply_author_filter",
@@ -145,6 +150,8 @@ __all__ = [
     "is_logged_in",
     "iter_result_pages",
     "load_selectors",
+    "log_in",
+    "login_page_state",
     "next_page_url",
     "open_topic",
     "parse_results",

@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## Unreleased
 
+### Added
+
+- **An expired session is now signed in automatically.** `ensure_logged_in` reuses the
+  attached browser's session, and when that session is gone it fills the tracker's login
+  form with `login.username`/`login.password` and submits it — in the browser you already
+  launched, which is the one client the site does not serve a Cloudflare interstitial to.
+  Verified against the live tracker: cookies dropped over CDP, run started, signed in
+  again in 3.6 s. Waiting for a human is still the fallback, and now logs which of the
+  four reasons (no form, interstitial, captcha, credentials refused) made it necessary.
+- **The browser is closed when the program exits.** `browser.close_on_exit` (default
+  `true`) closes the browser this program attached to — a CDP `Browser.close` first, then
+  a terminate signal to the process, so the profile is flushed rather than lost. The
+  cookies live in that profile, so the session survives the shutdown: relaunching the same
+  `--user-data-dir` comes back signed in.
+
+### Changed
+
+- The `justfile` works on Linux and macOS as well as Windows. The recipe that launches the
+  browser now has a `[unix]` and a `[windows]` variant (detaching a browser differs per
+  platform), it defaults to the platform's usual binary, and `just logs` asks `just` for the
+  date instead of shelling out to `date`. Every recipe is `sh`, which is what `just` itself
+  defaults to — Git for Windows included.
+
 ## 0.1.0 — 2026-10-07
 The rewrite of the Selenium-era script in `legacy/`, as a maintainable project.
 

@@ -13,11 +13,13 @@
 #   5. .env in the project root
 
 browser:
-  # How patient the driver is. How a browser is *obtained* is not configurable: every
-  # source is driven through a browser you launched yourself (see README "Cloudflare").
+  # How patient the driver is, and whether the browser is closed again when a command
+  # finishes. How a browser is *obtained* is not configurable: every source is driven
+  # through a browser you launched yourself (see README "Cloudflare").
   navigation_timeout: 30000 # ms a page load may take
   action_timeout: 15000 # ms a click or a fill may take
   downloads_dir: data/torrents
+  close_on_exit: true # a graceful close — the profile keeps the signed-in session
 
 run:
   resume: true # skip the tasks already finished today
@@ -40,7 +42,10 @@ sources:
     connect_url: "http://localhost:9222" # the browser YOU launched (CDP endpoint)
     login:
       username: "" # also used to check that the session belongs to this account
-      password: "" # never posted: the login POST is blocked, a human logs in
+      password: "" # typed into the login form when the session has expired
+      # With both set, an expired session is signed in again by itself; without them it
+      # always takes a person. A Cloudflare interstitial or a captcha still can: then the
+      # run waits for you in the browser window (`--login-timeout`).
     selectors_file: null # optional YAML overriding URLs/selectors/literals
     # The sections to watch, name → the site's forum id (`f`), in the order to search
     # them. A task that names no category searches all of them. rutracker's

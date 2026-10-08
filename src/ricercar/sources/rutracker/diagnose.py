@@ -99,7 +99,7 @@ def _page_level(
             )
             break
 
-    if soup.select_one(selectors.login_form) is not None:
+    if soup.select_one(selectors.login_username) is not None:
         issues.append("the page is the login form, so the session is gone")
 
     return tuple(issues)
