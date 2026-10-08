@@ -171,10 +171,11 @@ logs:
 
 # ── Data ──────────────────────────────────────────────────────────────────
 
-# The copy is staged next to the target and swapped in only after it verifies, so this
-# is also the way to upgrade a database that is still on the legacy schema.
-# Import a legacy database into the current schema
-migrate source="legacy/torrents.db":
+# Import the legacy database into the current schema, in place. Reads database.path from
+# the configuration, keeps a copy of it (torrents.db.backup-<timestamp>), rebuilds the
+# same file with the constraints the legacy schema was missing, and leaves the name
+# alone. A database that is already current has nothing to import and says so.
+migrate source="":
     uv run python -m ricercar.repository.migrate "{{source}}"
 
 # ── Clean ─────────────────────────────────────────────────────────────────

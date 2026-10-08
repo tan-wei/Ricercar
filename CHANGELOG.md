@@ -20,9 +20,23 @@ All notable changes to this project are documented here. The format follows
   a terminate signal to the process, so the profile is flushed rather than lost. The
   cookies live in that profile, so the session survives the shutdown: relaunching the same
   `--user-data-dir` comes back signed in.
+- **Coverage is uploaded to Codecov by CI.** Each of the six test cells — `ubuntu-latest`
+  and `windows-latest` × Python 3.12, 3.13, 3.14 — runs `just coverage` and uploads
+  `coverage.xml` under a flag naming the cell, then keeps it as a build artifact: the same
+  shape TagMuse uses, so the badge is the merge of all six rather than one platform's view.
+  `fail_ci_if_error: false` is set, because a Codecov hiccup is not a failing suite.
 
 ### Changed
 
+- **`just migrate` imports the database where the configuration says it is, in place.** Its
+  argument is optional now, and `--target` and `--replace` are gone: the source is
+  `database.path` — the file a run uses — and the *same* file, with the same name, is what
+  comes out on the current schema. Nothing refers to a `legacy/` directory any more. An
+  existing database is copied aside first (`<name>.backup-<timestamp>`, a full copy
+  including its write-ahead log) instead of being overwritten only on request, and a
+  database that has already been imported reports that there is nothing to import rather
+  than failing — so the command can be run twice. Naming a file still imports one kept
+  elsewhere, into the configured database, and the copy is made with a progress bar.
 - The `justfile` works on Linux and macOS as well as Windows. The recipe that launches the
   browser now has a `[unix]` and a `[windows]` variant (detaching a browser differs per
   platform), it defaults to the platform's usual binary, and `just logs` asks `just` for the
@@ -137,7 +151,7 @@ The rewrite of the Selenium-era script in `legacy/`, as a maintainable project.
 
 - Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). There is no
   `playwright install` step: the `playwright` package is used for its CDP client only.
-- Coming from the legacy tool: `just migrate legacy/torrents.db` imports the old database.
+- Coming from the legacy tool: put the old database at `database.path` and run `just migrate` — it keeps a copy and rebuilds that same file.
   A database this project wrote earlier upgrades itself the first time it is opened — from
   version 2 that means one index on `url_table(add_date)`, measured at 0.09 s on a 631 MiB
   file holding 25,448 torrents.

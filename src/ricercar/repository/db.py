@@ -170,9 +170,9 @@ def check_schema(conn: sqlite3.Connection, path: Path | None = None) -> None:
         msg = (
             f"{where} still has the legacy schema (PRAGMA user_version = 0), so it has "
             f"to be imported before it can be used.\n"
-            f"The import rebuilds it in place — the new database is staged next to it and "
-            f"swapped in only once the copy has been verified:\n"
-            f"  uv run python -m ricercar.repository.migrate {where} --replace"
+            f"The import reads {where}, keeps a copy of it beside itself, and rebuilds "
+            f"the same file on the current schema:\n"
+            f"  just migrate"
         )
         raise LegacyDatabaseError(msg)
 
