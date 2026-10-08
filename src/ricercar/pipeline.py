@@ -596,7 +596,9 @@ class Runner:
         stored = 0
         logged_in_again = False
         pages_bar_label = f"  {describe_task(task)}"
-        pages_bar = progress.add_task(pages_bar_label, total=source.settings.max_pages)
+        # No total yet: how many pages this search has is the pager's to say, and it
+        # says it on the first page that arrives. `max_pages` is only the ceiling.
+        pages_bar = progress.add_task(pages_bar_label, total=None)
 
         async def search_and_download() -> bool:
             nonlocal stored
@@ -614,10 +616,18 @@ class Runner:
                 # with snapshots) is dropped instead of piling up for the whole task.
                 async with self.recorder.chunk(f"{describe_task(task)} — page {page_index}"):
                     try:
-                        hits = await pages.__anext__()
+                        results = await pages.__anext__()
                     except StopAsyncIteration:
                         return True
 
+                    hits = results.hits
+                    if results.total is not None:
+                        # What the tracker says this search holds, bounded by what the
+                        # configuration allows — a bar sized by max_pages would read
+                        # "of 50" for a search that has ten pages and stop there.
+                        progress.update(
+                            pages_bar, total=min(results.total, source.settings.max_pages)
+                        )
                     progress.advance(pages_bar)
                     outcome.new_authors += len(
                         self.state.remember_authors(source.name, [hit.author for hit in hits])

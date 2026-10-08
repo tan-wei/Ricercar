@@ -42,6 +42,13 @@ class Selectors:
     """Anything that says a person has to type a code — the automatic login gives up."""
     results_count: str = r"Результатов поиска:\s*(\d+)"
     """Regex matching the results header, capturing how many hits the search has."""
+    results_pages: str = r"Страница\s*(\d+)\s*из\s*(\d+)"
+    """Regex matching the pager's own line, capturing the current page and the total.
+
+    The site knows how many pages a search has — the pager opens with "Страница 1 из
+    10" — which is a fact about the search, unlike the configured ceiling on how far
+    the run may follow it.
+    """
     result_link: str = "a[data-topic_id]"
     """One anchor per result row, carrying the topic id."""
     result_uploader: str = "td.u-name-col"

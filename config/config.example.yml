@@ -90,7 +90,9 @@ sources:
       - category: "*" # anything new anywhere; same as naming no category
     must_complete_tasks: [] # run every time, whatever random_choice picks
     random_choice: 3 # how many of `tasks` to pick per run
-    max_pages: 50 # how far to follow the pager per search
+    max_pages: 50 # how far to follow the pager per search, at most — a ceiling, not a
+    # promise: the pager says how many pages the search really has ("Страница 1 из 10")
+    # and that is what the progress bar counts to
     quota:
       limit_torrents_one_day: 50 # per tracker, counted in the database
       page_delay_seconds: 0 # wait this long before the next page, after a page that

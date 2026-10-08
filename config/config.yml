@@ -73,6 +73,9 @@ sources:
     tasks: []
     must_complete_tasks: []
     random_choice: 3
+    # How far to follow a search's pager, at most. A ceiling, not a promise: the pager
+    # states the real number ("Страница 1 из 10") and that is what the progress bar
+    # counts to, so this only matters for a search longer than it.
     max_pages: 50
     quota:
       limit_torrents_one_day: 50

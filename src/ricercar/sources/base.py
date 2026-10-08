@@ -23,7 +23,7 @@ from playwright.async_api import Page
 
 from ricercar.browser import MANUAL_LOGIN_TIMEOUT
 from ricercar.config import SearchTask, SourceSettings
-from ricercar.models import SearchHit, TopicInfo
+from ricercar.models import SearchHit, SearchPage, TopicInfo
 
 
 class UnknownSourceError(LookupError):
@@ -124,13 +124,17 @@ class Source(Protocol):
         task: SearchTask,
         *,
         max_pages: int,
-    ) -> AsyncIterator[list[SearchHit]]:
-        """Yield the result pages of *task*, one list of hits at a time.
+    ) -> AsyncIterator[SearchPage]:
+        """Yield the result pages of *task*, one page of hits at a time.
 
         An async generator, so that a caller can stop early and so that the whole
         dance a site requires — opening the search, applying filters, walking the
         pager — stays inside the source. Reading only: downloads belong to
         :meth:`fetch_torrent`, which the caller drives on a page of its own.
+
+        *max_pages* is the ceiling on how far to follow the pager; a source that knows
+        from the page how many there really are reports that on every
+        :class:`~ricercar.models.SearchPage`, which is what the caller shows and stops by.
         """
         ...
 

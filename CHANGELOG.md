@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **The pages bar counts the pages the search has, not the ceiling on how many to
+  walk.** A search on rutracker says how long it is — "Страница 1 из 10" — and that is
+  the number the bar now shows: `max_pages` (still `50`) is only the point at which the
+  run gives up on something longer, so a bar sized by it read "of 50" and stopped at ten.
+  The walk also ends where the pager says the search ends instead of trusting a "next"
+  link to be absent on the last page. Every source now yields a `SearchPage` (the hits
+  plus the pager's own numbering) instead of a bare list of hits; a source that states no
+  total leaves the bar indeterminate rather than guessing.
 - **An expired session is now signed in automatically.** `ensure_logged_in` reuses the
   attached browser's session, and when that session is gone it fills the tracker's login
   form with `login.username`/`login.password` and submits it — in the browser you already

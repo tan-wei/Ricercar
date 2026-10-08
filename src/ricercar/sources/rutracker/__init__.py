@@ -18,12 +18,13 @@ from playwright.async_api import Page
 
 from ricercar.browser import MANUAL_LOGIN_TIMEOUT
 from ricercar.config import SearchTask, SourceSettings
-from ricercar.models import SearchHit, TopicInfo
+from ricercar.models import SearchHit, SearchPage, TopicInfo
 from ricercar.sources.rutracker.diagnose import diagnose, diagnose_results, diagnose_topic
 from ricercar.sources.rutracker.search import (
     apply_author_filter,
     iter_result_pages,
     next_page_url,
+    page_count,
     parse_results,
     start_search,
     uploaders,
@@ -77,7 +78,7 @@ class RutrackerSource:
         task: SearchTask,
         *,
         max_pages: int,
-    ) -> AsyncIterator[list[SearchHit]]:
+    ) -> AsyncIterator[SearchPage]:
         if not isinstance(task.category, int):
             # expand() resolves "every section" into concrete searches and the runner
             # always expands before it drives a source, so this is a programming error:
@@ -90,8 +91,8 @@ class RutrackerSource:
             # be applied before the pager starts moving.
             await apply_author_filter(page, task.author, selectors=self.selectors)
 
-        async for hits in iter_result_pages(page, max_pages=max_pages, selectors=self.selectors):
-            yield hits
+        async for results in iter_result_pages(page, max_pages=max_pages, selectors=self.selectors):
+            yield results
 
     async def fetch_torrent(
         self,
@@ -154,6 +155,7 @@ __all__ = [
     "login_page_state",
     "next_page_url",
     "open_topic",
+    "page_count",
     "parse_results",
     "parse_topic",
     "start_search",

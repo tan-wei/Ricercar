@@ -17,7 +17,7 @@ from playwright.async_api import Page
 
 from ricercar.browser.navigation import NAVIGATION_TIMEOUT, goto
 from ricercar.log import get_logger
-from ricercar.models import SearchHit
+from ricercar.models import SearchHit, SearchPage
 from ricercar.sources.base import SelectorsBrokenError
 from ricercar.sources.rutracker.diagnose import diagnose
 from ricercar.sources.rutracker.selectors import DEFAULT_SELECTORS, Selectors
@@ -64,6 +64,19 @@ def uploaders(html: str, selectors: Selectors = DEFAULT_SELECTORS) -> set[str]:
     """Return the uploaders present on a results page."""
     soup = BeautifulSoup(html, "lxml")
     return {cell.get_text(strip=True) for cell in soup.select(selectors.result_uploader)}
+
+
+def page_count(html: str, selectors: Selectors = DEFAULT_SELECTORS) -> tuple[int, int] | None:
+    """Return ``(this page, how many pages)`` as the pager states them.
+
+    ``None`` when the page does not carry the line at all — a results page with no
+    hits has no pager, and it is better to say "unknown" than to invent a number.
+    """
+    text = BeautifulSoup(html, "lxml").get_text(" ")
+    match = re.search(selectors.results_pages, text)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 def next_page_url(
@@ -168,25 +181,47 @@ async def iter_result_pages(
     *,
     max_pages: int,
     selectors: Selectors = DEFAULT_SELECTORS,
-) -> AsyncIterator[list[SearchHit]]:
+) -> AsyncIterator[SearchPage]:
     """Yield the current results page and its successors, up to *max_pages*.
 
     Call :func:`start_search` (and optionally :func:`apply_author_filter`) first.
     The page must stay on the results while iterating — reading only, so a caller
     can drive downloads in a second tab.
+
+    Every yielded page carries the pager's own numbering — "Страница 1 из 10" for a broad
+    search — which is a fact about the search, unlike ``max_pages``. The walk ends where
+    that numbering says it ends rather than trusting a "next" link to be absent: the
+    pager's count is the authority, and a link that points past it is not followed.
     """
     log = get_logger()
     page_index = 0
+    total: int | None = None
     url: str | None = page.url
 
     while url is not None and page_index < max_pages:
         page_index += 1
         html = await page.content()
         hits = parse_results(html, selectors)
-        log.info("{} result(s) on page {}", len(hits), page_index)
-        yield hits
+        counted = page_count(html, selectors)
+        if counted is not None:
+            total = counted[1]
+            if counted[0] != page_index:
+                # The site counts pages itself; a disagreement means the walk is not
+                # where it thinks it is, and the next link may belong to another page.
+                log.warning("The pager says page {} of {}, we are on page {}", *counted, page_index)
+        log.info(
+            "{} result(s) on page {}{}",
+            len(hits),
+            page_index,
+            f" of {total}" if total else "",
+        )
+        yield SearchPage(hits=hits, number=page_index, total=total)
 
         if page_index >= max_pages:
+            log.info("Stopping at max_pages ({})", max_pages)
+            return
+        if total is not None and page_index >= total:
+            log.info("That was the last page ({})", total)
             return
         url = next_page_url(html, page.url, selectors)
         if url is None:
@@ -235,6 +270,7 @@ __all__ = [
     "apply_author_filter",
     "iter_result_pages",
     "next_page_url",
+    "page_count",
     "parse_results",
     "start_search",
     "uploaders",

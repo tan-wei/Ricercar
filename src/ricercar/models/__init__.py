@@ -29,6 +29,24 @@ class SearchHit:
 
 
 @dataclass(frozen=True, slots=True)
+class SearchPage:
+    """One page of search results, together with the pager's own numbering.
+
+    The pager says how many pages a search has ("Страница 1 из 10"); that number is the
+    truth about the search, while ``max_pages`` in the configuration is only the
+    ceiling on how far the run may follow it. Both travel with the page so the caller
+    can report and stop by what the site says rather than by what it was allowed to do.
+    """
+
+    hits: list[SearchHit]
+    """The rows on this page, in the order the site listed them."""
+    number: int
+    """Where this page sits in the walk, 1-based."""
+    total: int | None = None
+    """How many pages the tracker says the search has; ``None`` when it does not say."""
+
+
+@dataclass(frozen=True, slots=True)
 class TopicInfo:
     """What a topic page tells us before downloading anything."""
 
@@ -56,4 +74,4 @@ class TorrentMetadata:
     """Non-fatal consistency problems found while parsing; empty when sound."""
 
 
-__all__ = ["SearchHit", "TopicInfo", "TorrentMetadata"]
+__all__ = ["SearchHit", "SearchPage", "TopicInfo", "TorrentMetadata"]

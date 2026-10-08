@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from bs4 import BeautifulSoup
 
 from ricercar.config import SearchTask, SourceSettings
+from ricercar.models import SearchPage
 from ricercar.sources.rutracker import RutrackerSource, parse_results, uploaders
 from ricercar.sources.rutracker.diagnose import diagnose_results, diagnose_topic
-from ricercar.sources.rutracker.search import next_page_url
+from ricercar.sources.rutracker.search import iter_result_pages, next_page_url, page_count
 from ricercar.sources.rutracker.selectors import DEFAULT_SELECTORS, Selectors, load_selectors
 from ricercar.sources.rutracker.session import LoginOutcome, login_page_state
 from ricercar.sources.rutracker.topic import parse_topic
@@ -23,6 +27,75 @@ CHALLENGE_HTML = "<html><body><h1>Just a moment...</h1></body></html>"
 LOGIN_HTML = '<html><body><form><input name="login_username"></form></body></html>'
 RENAMED_HTML = "<html><body><p>Результатов поиска: 500</p><a href='/x'>row</a></body></html>"
 PLAIN_HTML = "<html><body><p>nothing much here</p></body></html>"
+
+PAGE_SIZE = 50
+"""Rows per results page; the pager's ``start`` parameter is a multiple of it."""
+
+
+def _results_html(number: int, total: int, *, dead_next: bool = False) -> str:
+    """A results page shaped like the real one: header, one row, pager, "page N of M".
+
+    *dead_next* adds the "След." link a last page may still carry, pointing at a page that
+    does not exist.
+    """
+    offsets = [(page - 1) * PAGE_SIZE for page in range(1, total + 1)]
+    pager = "".join(
+        f'<a class="pg" href="https://rutracker.org/forum/tracker.php?search_id=abc'
+        f'&amp;start={offset}">{offset // PAGE_SIZE + 1}</a>'
+        for offset in offsets
+    )
+    if dead_next:
+        pager += (
+            f'<a class="pg" href="https://rutracker.org/forum/tracker.php?search_id=abc'
+            f'&amp;start={total * PAGE_SIZE}">След.</a>'
+        )
+    return (
+        "<html><body>"
+        "<p>Результатов поиска: 500</p>"
+        f"<p>Страница <b>{number}</b> из <b>{total}</b></p>"
+        "<table><tr>"
+        '<td class="u-name-col">someone</td>'
+        f'<td><a data-topic_id="t{number}" href="/forum/viewtopic.php?t={number}">'
+        f"Title {number}</a></td>"
+        "<td>1.5 GB</td>"
+        "</tr></table>"
+        f"<p>{pager}</p>"
+        "</body></html>"
+    )
+
+
+class FakePager:
+    """As much of a Playwright page as the walk touches, over synthetic pages.
+
+    Serves the page whose ``start`` offset is in the current URL, so following the
+    pager is what makes the next page appear — and counts the visits, which is how a
+    test sees whether one page too many was fetched.
+    """
+
+    def __init__(self, total: int, *, dead_next: bool = False) -> None:
+        self.total = total
+        self.dead_next = dead_next
+        self.url = f"{RESULTS_URL}&start=0"
+        self.visited: list[str] = [self.url]
+
+    async def content(self) -> str:
+        start = int(parse_qs(urlparse(self.url).query).get("start", ["0"])[0])
+        number = start // PAGE_SIZE + 1
+        return _results_html(number, self.total, dead_next=self.dead_next)
+
+    async def goto(self, url: str, **_kwargs: Any) -> None:
+        self.url = url
+        self.visited.append(url)
+
+    async def wait_for_function(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+def _walk(page: FakePager, *, max_pages: int) -> list[SearchPage]:
+    async def collect() -> list[SearchPage]:
+        return [results async for results in iter_result_pages(page, max_pages=max_pages)]
+
+    return asyncio.run(collect())
 
 
 # ── Parsing a results page ────────────────────────────────────────────────
@@ -68,6 +141,47 @@ def test_an_override_changes_how_the_page_is_read(search_html: str) -> None:
 
     assert parse_results(search_html, selectors) == []
     assert any("no row matches" in issue for issue in diagnose_results(search_html, selectors))
+
+
+# ── How many pages a search has, and how far the walk goes ────────────────
+
+
+def test_the_pager_says_how_many_pages_the_search_has(search_html: str) -> None:
+    # "Страница 1 из 10": a fact about the search, and the one the progress bar needs —
+    # the configured ceiling only says how far we are *allowed* to follow it.
+    assert page_count(search_html) == (1, 10)
+
+
+def test_a_page_without_a_pager_says_nothing() -> None:
+    assert page_count(RENAMED_HTML) is None
+
+
+def test_the_walk_reports_the_pagers_own_count_on_every_page() -> None:
+    pages = _walk(FakePager(total=10), max_pages=10)
+
+    assert [results.number for results in pages] == list(range(1, 11))
+    assert {results.total for results in pages} == {10}
+    assert all(results.hits for results in pages)
+
+
+def test_the_walk_stops_where_the_pager_says_the_search_ends() -> None:
+    # A last page may still offer a "next" link; the count the pager states wins, so the
+    # page that link points at is never fetched.
+    page = FakePager(total=3, dead_next=True)
+
+    pages = _walk(page, max_pages=10)
+
+    assert [results.number for results in pages] == [1, 2, 3]
+    assert len(page.visited) == 3
+
+
+def test_the_walk_still_stops_at_max_pages() -> None:
+    # The ceiling is the caller's, and a search longer than it is cut short — but the
+    # pages that were read still report how many the search really has.
+    pages = _walk(FakePager(total=10), max_pages=2)
+
+    assert [results.number for results in pages] == [1, 2]
+    assert pages[-1].total == 10
 
 
 # ── Parsing a topic page ──────────────────────────────────────────────────

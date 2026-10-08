@@ -193,7 +193,13 @@ class SourceSettings(BaseModel):
     random_choice: Annotated[int, Field(ge=0)] = 3
     """How many tasks to randomly pick each run."""
     max_pages: Annotated[int, Field(ge=1)] = 50
-    """Maximum pages to traverse per search."""
+    """How far to follow a search's pager, at most.
+
+    A ceiling, not a target: the pager itself says how many pages a search has
+    ("Страница 1 из 10"), and that is the number the progress bar counts to. This is
+    only the point at which the run gives up on a search longer than the ceiling —
+    nothing on screen ever promises it.
+    """
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
     """How much may be taken from this tracker per day."""
 

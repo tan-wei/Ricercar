@@ -18,10 +18,11 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 import pytest
+from rich.progress import Progress, TaskID
 
 from ricercar.config import QuotaConfig, SearchTask, Settings, SourceSettings
 from ricercar.history import TaskHistory
-from ricercar.models import SearchHit, TorrentMetadata
+from ricercar.models import SearchHit, SearchPage, TorrentMetadata
 from ricercar.parser.torrent import parse_file
 from ricercar.pipeline import (
     PAUSE_TICK,
@@ -65,6 +66,14 @@ class FakeSource:
 
 def _meta(url: str, md5: str) -> TorrentMetadata:
     return TorrentMetadata(url=url, name="Bach", size=1024, file_count=1, md5=md5)
+
+
+def _hit(topic_id: str) -> SearchHit:
+    return SearchHit(
+        topic_id=topic_id,
+        title=f"Bach {topic_id}",
+        url=f"https://fake.example/t={topic_id}",
+    )
 
 
 def _settings(**kwargs: Any) -> SourceSettings:
@@ -124,6 +133,12 @@ def run_config(extra_config: ExtraConfig, tmp_path: Path) -> Settings:
                 "    must_complete_tasks: []",
                 "    random_choice: 1",
                 "    max_pages: 1",
+                # The suite reads the developer's own config.local.yml on top of the
+                # committed defaults, and a page delay there would make every test that
+                # stores something wait it out. Tests that are *about* the delay layer
+                # their own value on top of this (see the `paced` fixture).
+                "    quota:",
+                "      page_delay_seconds: 0",
                 "",
             ]
         ),
@@ -293,18 +308,26 @@ class ReplaySource:
     name = "fake"
     host = "fake.example"
 
-    def __init__(self, settings: SourceSettings, pages: list[list[SearchHit]]) -> None:
+    def __init__(
+        self,
+        settings: SourceSettings,
+        pages: list[list[SearchHit]],
+        *,
+        total: int | None = None,
+    ) -> None:
         self.settings = settings
         self.pages = pages
+        self.total = total
+        """What the pager says; ``None`` stands for a source that does not say."""
         self.calls: list[tuple[object, SearchTask, int]] = []
         self.fetched: list[tuple[object, str]] = []
 
     async def search(
         self, page: object, task: SearchTask, *, max_pages: int
-    ) -> AsyncIterator[list[SearchHit]]:
+    ) -> AsyncIterator[SearchPage]:
         self.calls.append((page, task, max_pages))
-        for hits in self.pages:
-            yield list(hits)
+        for number, hits in enumerate(self.pages, start=1):
+            yield SearchPage(hits=list(hits), number=number, total=self.total)
 
     async def fetch_torrent(self, page: object, hit: SearchHit, directory: object) -> Any:
         """Hand over the saved fixture, as if it had been downloaded from *hit*."""
@@ -510,6 +533,74 @@ def test_a_page_of_rows_that_were_only_downloaded_is_still_paced(
     assert outcome.known == 2
     assert time.monotonic() - started >= 0.3
     assert any("Waiting 0.3s before the next page" in message for message in log_messages)
+
+
+# ── How many pages the bar counts to ──────────────────────────────────────
+
+
+def _bar_totals(monkeypatch: pytest.MonkeyPatch) -> list[int | None]:
+    """Every total the run puts on a progress bar, in order.
+
+    The bar is gone by the time the run returns — the runner removes it — so how it was
+    sized can only be seen while it is being sized.
+    """
+    totals: list[int | None] = []
+    original = Progress.update
+
+    def record(self: Progress, task_id: TaskID, **kwargs: Any) -> None:
+        if "total" in kwargs:
+            totals.append(kwargs["total"])
+        original(self, task_id, **kwargs)
+
+    monkeypatch.setattr(Progress, "update", record)
+    return totals
+
+
+def test_the_pages_bar_counts_the_pagers_pages_and_not_the_ceiling(
+    run_config: Settings, extra_config: ExtraConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A broad rutracker search is ten pages long whatever the configuration says — a bar
+    # sized by `max_pages` promises 50 and stops at ten, which is what makes a ceiling
+    # look like a lie.
+    settings = extra_config("tall-bar.yml", "sources:\n  rutracker:\n    max_pages: 50\n")
+    # The temp database `run_config` laid down has to survive the override.
+    assert settings.db_path == run_config.db_path
+    source = ReplaySource(settings.sources["rutracker"], [[_hit("1")], [_hit("2")]], total=10)
+    totals = _bar_totals(monkeypatch)
+
+    _one_page(_runner(settings, source), source)
+
+    assert 10 in totals
+    assert 50 not in totals
+
+
+def test_the_pages_bar_is_capped_by_max_pages_when_the_search_is_longer(
+    run_config: Settings, extra_config: ExtraConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The pager may promise more pages than the run is allowed to walk; what the bar
+    # counts to is what will actually be walked.
+    settings = extra_config("short-bar.yml", "sources:\n  rutracker:\n    max_pages: 3\n")
+    # The temp database `run_config` laid down has to survive the override.
+    assert settings.db_path == run_config.db_path
+    source = ReplaySource(settings.sources["rutracker"], [[_hit("1")]], total=10)
+    totals = _bar_totals(monkeypatch)
+
+    _one_page(_runner(settings, source), source)
+
+    assert 3 in totals
+
+
+def test_a_search_nobody_counts_leaves_the_bar_indeterminate(
+    run_config: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Not every source states a page count, and a guess dressed up as a total is worse
+    # than a spinner.
+    source = ReplaySource(run_config.sources["rutracker"], [[_hit("1")]])
+    totals = _bar_totals(monkeypatch)
+
+    _one_page(_runner(run_config, source), source)
+
+    assert totals == []
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────
