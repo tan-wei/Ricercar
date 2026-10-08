@@ -69,6 +69,11 @@ jobs:
   # the .torrent in tests/fixtures, and the three tests that drive a real browser skip
   # themselves when none is attached (see the `integration` marker). Both platforms,
   # because this project is developed on Windows and run wherever the user is.
+  #
+  # Every cell measures coverage and uploads it, the way TagMuse does: a flag naming the
+  # cell, so Codecov can merge the six reports and keep them tellable apart, and the XML
+  # as a build artifact. `fail_ci_if_error: false`, because a Codecov hiccup is not a
+  # reason to call a green suite red.
   tests:
     name: tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -85,23 +90,17 @@ jobs:
           enable-cache: true
       - uses: extractions/setup-just@v4
       - run: just sync
-      - run: just test
-
-  coverage:
-    name: coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
-        with:
-          python-version: "3.14"
-          enable-cache: true
-      - uses: extractions/setup-just@v4
-      - run: just sync
       - run: just coverage
+      - uses: codecov/codecov-action@v7
+        with:
+          files: coverage.xml
+          disable_search: true
+          flags: ${{ matrix.os }}-${{ matrix.python-version }}
+          name: coverage-${{ matrix.os }}-${{ matrix.python-version }}
+          fail_ci_if_error: false
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: coverage
+          name: coverage-${{ matrix.os }}-${{ matrix.python-version }}
           path: coverage.xml
           if-no-files-found: ignore

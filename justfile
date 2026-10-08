@@ -132,7 +132,7 @@ test-integration:
 test-cov:
     uv run pytest -v --cov=src/ricercar --cov-report=term-missing
 
-# The suite with coverage for CI: terminal + coverage.xml for the artifact
+# The suite with coverage for CI: terminal + coverage.xml for Codecov and the artifact
 coverage:
     uv run pytest --cov=src/ricercar --cov-report=term-missing --cov-report=xml:coverage.xml
 
