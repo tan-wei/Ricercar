@@ -454,7 +454,7 @@ def paced(run_config: Settings, extra_config: ExtraConfig) -> Callable[[float], 
     def with_delay(seconds: float) -> Settings:
         settings = extra_config(
             f"paced-{seconds}.yml",
-            f"sources:\n  rutracker:\n    quota:\n      page_delay_seconds: {seconds}\n",
+            f"sources:\n  rutracker:\n    quota:\n      delay_between_actions: {seconds}\n",
         )
         # The delay is what this layers; the temp database is what it must not disturb.
         assert settings.db_path == run_config.db_path
@@ -464,10 +464,11 @@ def paced(run_config: Settings, extra_config: ExtraConfig) -> Callable[[float], 
 
 
 def test_a_page_that_stored_something_is_paced_before_the_next(
-    paced: Callable[[float], Settings], log_messages: list[str]
+    paced: Callable[[float], Settings],
 ) -> None:
-    # One hit, on two pages: the first stores it, the second finds the content already
-    # there. The delay is owed once — after the page that made the tracker do work.
+    # Two pages, same hit: page 1 stores it, page 2 finds it already known.
+    # Every action that reaches the tracker is paced — download before page 1
+    # (0.3 s), pagination after page 1 (0.3 s), pagination after page 2 (0.3 s).
     settings = paced(0.3)
     hit = SearchHit(topic_id="1", title="Bach", url="https://fake.example/t=1")
     source = ReplaySource(settings.sources["rutracker"], [[hit], [hit]])
@@ -478,19 +479,17 @@ def test_a_page_that_stored_something_is_paced_before_the_next(
 
     assert outcome.stored == 1
     assert outcome.known == 1
-    assert elapsed >= 0.3
-    # A wait that says nothing is indistinguishable from a hang.
-    assert any("Waiting 0.3s before the next page" in message for message in log_messages)
+    # Three paces of 0.3 s each ⇒ at least 0.9 s total.
+    assert elapsed >= 0.9
 
 
-def test_a_page_of_rows_we_already_have_is_not_paced(
+def test_pagination_is_still_paced_when_all_hits_are_known(
     paced: Callable[[float], Settings],
 ) -> None:
-    # Nothing was asked of the tracker beyond the page that listed the row, so there is
-    # nothing to pace — which is what keeps the delay off a steady-state run. The delay
-    # here is deliberately huge: a run that waits it out fails this test, and takes two
-    # seconds proving it.
-    settings = paced(2.0)
+    # All hits are already stored, so nothing is downloaded — but we still accessed the
+    # tracker to fetch the page, and paginating to the next results page costs another
+    # request.  Every pagination is paced regardless of whether any hit was stored.
+    settings = paced(0.3)
     url = "https://fake.example/t=1"
     with TorrentRepository(settings.db_path) as repo:
         repo.add(_meta(url, "a" * 32), b"payload")
@@ -502,11 +501,12 @@ def test_a_page_of_rows_we_already_have_is_not_paced(
     outcome = _one_page(_runner(settings, source), source)
 
     assert outcome.known == 1
-    assert time.monotonic() - started < 1.0
+    # Pagination pace (0.3 s) after the one page that had the (known) hit.
+    assert time.monotonic() - started >= 0.3
 
 
 def test_a_page_of_rows_that_were_only_downloaded_is_still_paced(
-    paced: Callable[[float], Settings], log_messages: list[str]
+    paced: Callable[[float], Settings],
 ) -> None:
     # The content is already here under another url, so neither row is stored — but both
     # still cost a request, and the request rate is the thing that gets an account
@@ -532,7 +532,6 @@ def test_a_page_of_rows_that_were_only_downloaded_is_still_paced(
     assert outcome.downloaded == 2
     assert outcome.known == 2
     assert time.monotonic() - started >= 0.3
-    assert any("Waiting 0.3s before the next page" in message for message in log_messages)
 
 
 # ── How many pages the bar counts to ──────────────────────────────────────

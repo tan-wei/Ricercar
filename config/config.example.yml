@@ -95,9 +95,11 @@ sources:
     # and that is what the progress bar counts to
     quota:
       limit_torrents_one_day: 50 # per tracker, counted in the database
-      page_delay_seconds: 0 # wait this long before the next page, after a page that
-      # asked the tracker for a torrent — pacing what the tracker sees. 0 (the default)
-      # never waits, and a page of rows the database already had never waits either.
+      delay_between_actions: 1.0 # seconds to wait *before* each network request to the
+      # tracker — a new search page, paginating, opening a topic, downloading a torrent.
+      # Unlike the legacy ``page_delay`` this is **not** conditional on whether the page
+      # had new content: every request is paced, keeping a steady footprint.  0 disables
+      # the delay.  Interruptible (Ctrl‑C ends it at the next tick).
 
 retry:
   max_attempts: 3
