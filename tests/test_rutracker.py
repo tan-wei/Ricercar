@@ -12,12 +12,18 @@ from bs4 import BeautifulSoup
 
 from ricercar.config import SearchTask, SourceSettings
 from ricercar.models import SearchPage
+from ricercar.sources.base import SelectorsBrokenError, SiteUnderMaintenanceError
 from ricercar.sources.rutracker import RutrackerSource, parse_results, uploaders
 from ricercar.sources.rutracker.diagnose import diagnose_results, diagnose_topic
-from ricercar.sources.rutracker.search import iter_result_pages, next_page_url, page_count
+from ricercar.sources.rutracker.search import (
+    _raise_if_unusable,
+    iter_result_pages,
+    next_page_url,
+    page_count,
+)
 from ricercar.sources.rutracker.selectors import DEFAULT_SELECTORS, Selectors, load_selectors
 from ricercar.sources.rutracker.session import LoginOutcome, login_page_state
-from ricercar.sources.rutracker.topic import parse_topic
+from ricercar.sources.rutracker.topic import open_topic, parse_topic
 
 RESULTS_URL = "https://rutracker.org/forum/tracker.php?search_id=abc&nm=Bach"
 TOPIC_URL = "https://rutracker.org/forum/viewtopic.php?t=1580744"
@@ -225,6 +231,40 @@ def test_a_page_that_is_not_a_topic_is_recognised() -> None:
     assert any("not a topic page" in issue for issue in issues)
 
 
+MAINTENANCE_HTML = (
+    "<html><body><p>the site is under maintenance, please come back later</p></body></html>"
+)
+MAINTENANCE_TOPIC_HTML = (
+    "<html><body><p>Under maintenance</p><a href='viewtopic.php?t=1'>topic</a></body></html>"
+)
+
+
+def test_a_maintenance_page_is_recognised_on_results() -> None:
+    issues = diagnose_results(MAINTENANCE_HTML)
+
+    assert any("under maintenance" in issue for issue in issues)
+
+
+def test_a_maintenance_page_is_recognised_on_topic() -> None:
+    # A topic page that also says "maintenance" is marked as maintenance, not as broken.
+    issues = diagnose_topic(MAINTENANCE_TOPIC_HTML)
+
+    assert any("under maintenance" in issue for issue in issues)
+
+
+def test_a_maintenance_page_is_not_mistaken_for_a_challenge_first() -> None:
+    # Cloudflare markers are checked before maintenance markers, so a page with both
+    # is identified as a challenge.  Maintenance is a secondary diagnosis.
+    html = (
+        "<html><body><p>Just a moment... checking your browser before maintenance</p></body></html>"
+    )
+
+    issues = diagnose_results(html)
+
+    assert not any("maintenance" in issue for issue in issues)
+    assert any("Cloudflare" in issue for issue in issues)
+
+
 # ── The login page ────────────────────────────────────────────────────────
 
 
@@ -392,3 +432,58 @@ def test_a_selectors_file_that_is_not_a_mapping_is_rejected(tmp_path: Path) -> N
 
     with pytest.raises(TypeError, match="expected a YAML mapping"):
         Selectors.load(path)
+
+
+# ── Raising SiteUnderMaintenanceError ─────────────────────────────────────
+
+
+def test_raise_if_unusable_selectors_broken_error() -> None:
+    """A page with generic issues raises SelectorsBrokenError, not maintenance."""
+    with pytest.raises(SelectorsBrokenError, match="missing"):
+        _raise_if_unusable(PLAIN_HTML, DEFAULT_SELECTORS)
+
+
+def test_raise_if_unusable_maintenance_error() -> None:
+    """A page with maintenance markers raises SiteUnderMaintenanceError."""
+    with pytest.raises(SiteUnderMaintenanceError, match="under maintenance"):
+        _raise_if_unusable(MAINTENANCE_HTML, DEFAULT_SELECTORS)
+
+
+def test_raise_if_unusable_clean_page_raises_nothing(search_html: str) -> None:
+    """A healthy results page does not raise at all."""
+    assert _raise_if_unusable(search_html, DEFAULT_SELECTORS) is None
+
+
+# ── open_topic maintenance detection ──────────────────────────────────────
+
+
+class _FakeTopicPage:
+    """A fake Playwright page for testing open_topic's maintenance check."""
+
+    def __init__(self, html: str, url: str = TOPIC_URL) -> None:
+        self._html = html
+        self._url = url
+
+    async def content(self) -> str:
+        return self._html
+
+    @property
+    def url(self) -> str:
+        return self._url
+
+    async def goto(self, url: str, **_kwargs: object) -> None:
+        self._url = url
+
+
+def test_open_topic_raises_maintenance_on_maintenance_page() -> None:
+    page = _FakeTopicPage(MAINTENANCE_TOPIC_HTML)
+
+    with pytest.raises(SiteUnderMaintenanceError, match="under maintenance"):
+        asyncio.run(open_topic(page, TOPIC_URL))
+
+
+def test_open_topic_raises_selectors_broken_on_unknown_page() -> None:
+    page = _FakeTopicPage(PLAIN_HTML)
+
+    with pytest.raises(SelectorsBrokenError, match="not a topic page"):
+        asyncio.run(open_topic(page, TOPIC_URL))
