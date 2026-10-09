@@ -58,6 +58,15 @@ class SelectorsBrokenError(RuntimeError):
         super().__init__("; ".join(self.issues) or "the page does not look like one we know")
 
 
+class SiteUnderMaintenanceError(RuntimeError):
+    """The tracker responded but is not usable — maintenance, Cloudflare, etc.
+
+    A transient failure that should be retried with exponential back-off after a delay,
+    rather than being reported as a permanent failure.  The caller gives up after the
+    configured number of attempts.
+    """
+
+
 @runtime_checkable
 class Source(Protocol):
     """One monitorable tracker."""

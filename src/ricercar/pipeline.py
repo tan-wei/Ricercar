@@ -49,6 +49,7 @@ from ricercar.sources import Source, enabled_sources
 from ricercar.sources.base import (
     SelectorsBrokenError,
     SessionExpiredError,
+    SiteUnderMaintenanceError,
     TorrentUnavailableError,
 )
 from ricercar.state import StateStore, task_key
@@ -463,6 +464,20 @@ class Runner:
                             failures_in_a_row,
                         )
                         break
+                    continue
+                except SiteUnderMaintenanceError as exc:
+                    outcome.failures += 1
+                    log.warning(
+                        "{}: {} — the site is under maintenance, gave up after "
+                        "{} retries, moving on to the next task",
+                        source.name,
+                        describe_task(task),
+                        self.cfg.retry.max_attempts,
+                    )
+                    await self.recorder.capture(results_page, "maintenance", note=str(exc))
+                    # Maintenance is not a permanent failure, so do not count it
+                    # towards failures_in_a_row — that counter guards against a site
+                    # redesign.
                     continue
                 except PlaywrightTimeout as exc:
                     issues = await self._diagnose(source, results_page)

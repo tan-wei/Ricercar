@@ -103,9 +103,12 @@ sources:
 
 retry:
   max_attempts: 3
-  base_delay: 2.0 # seconds; a timeout waits twice this
-  max_delay: 60.0
+  base_delay: 2.0 # seconds before the first retry; doubled after each attempt
+  max_delay: 60.0 # ceiling for the exponential back-off (transient/network errors)
   backoff_factor: 2.0
+  maintenance_max_delay: 3600.0 # separate ceiling for "site under maintenance" —
+  # a maintenance window may last minutes, and a short timeout would exhaust the 3
+  # retries pointlessly. The back-off is 2 s → 4 s → 8 s → … → 3600 s (capped).
 
 log:
   level: DEBUG # TRACE|DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL

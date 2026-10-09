@@ -23,6 +23,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from ricercar.config import RetryConfig
 from ricercar.log import get_logger
+from ricercar.sources.base import SiteUnderMaintenanceError
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,8 @@ class Policies:
     """A browser or network hiccup: retry soon."""
     timeout: Policy
     """A slow or unresponsive page: retry, but back off further."""
+    maintenance: Policy
+    """Site under maintenance: retry with a much longer back-off."""
 
     @classmethod
     def from_config(cls, cfg: RetryConfig) -> Policies:
@@ -69,6 +72,14 @@ class Policies:
                 backoff=cfg.backoff_factor,
                 retry_on=(PlaywrightTimeout,),
             ),
+            maintenance=Policy(
+                name="maintenance",
+                attempts=cfg.max_attempts,
+                base_delay=cfg.base_delay,
+                max_delay=cfg.maintenance_max_delay,
+                backoff=cfg.backoff_factor,
+                retry_on=(SiteUnderMaintenanceError,),
+            ),
         )
 
     def for_exception(self, exc: BaseException) -> Policy | None:
@@ -79,7 +90,7 @@ class Policies:
         session, an unavailable torrent, a page whose selectors no longer match —
         falls through to ``None`` and is reported rather than retried.
         """
-        for policy in (self.timeout, self.transient):
+        for policy in (self.maintenance, self.timeout, self.transient):
             if isinstance(exc, policy.retry_on):
                 return policy
         return None

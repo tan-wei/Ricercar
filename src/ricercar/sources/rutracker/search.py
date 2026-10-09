@@ -18,7 +18,7 @@ from playwright.async_api import Page
 from ricercar.browser.navigation import NAVIGATION_TIMEOUT, goto
 from ricercar.log import get_logger
 from ricercar.models import SearchHit, SearchPage
-from ricercar.sources.base import SelectorsBrokenError
+from ricercar.sources.base import SelectorsBrokenError, SiteUnderMaintenanceError
 from ricercar.sources.rutracker.diagnose import diagnose
 from ricercar.sources.rutracker.selectors import DEFAULT_SELECTORS, Selectors
 
@@ -173,6 +173,9 @@ def _raise_if_unusable(html: str, selectors: Selectors) -> None:
     """Refuse a page the source cannot make sense of, with the reasons attached."""
     issues = diagnose(html, selectors)
     if issues:
+        # Maintenance issues are transient — retry with exponential back-off.
+        if any("maintenance" in issue for issue in issues):
+            raise SiteUnderMaintenanceError("; ".join(issues))
         raise SelectorsBrokenError(issues)
 
 
