@@ -26,6 +26,15 @@ CHALLENGE_MARKERS = (
 )
 """Text that only appears on an interstitial rather than on a forum page."""
 
+MAINTENANCE_MARKERS = (
+    "maintenance",
+    "under maintenance",
+    "temporarily unavailable",
+    "the site is currently unavailable",
+    "site is under maintenance",
+)
+"""Text suggesting the tracker is undergoing maintenance."""
+
 
 def diagnose_results(html: str, selectors: Selectors = DEFAULT_SELECTORS) -> tuple[str, ...]:
     """Problems that stop a search-results page from being usable."""
@@ -99,6 +108,15 @@ def _page_level(
             )
             break
 
+    if not issues:
+        for marker in MAINTENANCE_MARKERS:
+            if marker in text:
+                issues.append(
+                    f"the tracker appears to be under maintenance (text contains "
+                    f"{marker!r}) — will retry with a longer back-off"
+                )
+                break
+
     if soup.select_one(selectors.login_username) is not None:
         issues.append("the page is the login form, so the session is gone")
 
@@ -111,4 +129,10 @@ def _looks_like_topic(html: str) -> bool:
     return "viewtopic" in lowered or "скачать .torrent" in lowered
 
 
-__all__ = ["CHALLENGE_MARKERS", "diagnose", "diagnose_results", "diagnose_topic"]
+__all__ = [
+    "CHALLENGE_MARKERS",
+    "MAINTENANCE_MARKERS",
+    "diagnose",
+    "diagnose_results",
+    "diagnose_topic",
+]

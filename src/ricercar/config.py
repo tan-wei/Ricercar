@@ -236,10 +236,22 @@ class RetryConfig(BaseModel):
     """Retry behaviour for flaky operations."""
 
     max_attempts: Annotated[int, Field(ge=0, le=20)] = 3
-    base_delay: Annotated[float, Field(ge=0)] = 2.0
-    max_delay: Annotated[float, Field(ge=0)] = 60.0
-    backoff_factor: Annotated[float, Field(ge=1)] = 2.0
-    """Multiplicative factor for exponential backoff."""
+    """Number of attempts before giving up (including the first).  0 means no retry
+    at all — the operation fails immediately."""
+
+    base_delay: Annotated[float, Field(ge=0, le=3600)] = 2.0
+    """Seconds before the first retry; doubled after each attempt."""
+
+    max_delay: Annotated[float, Field(ge=0, le=3600)] = 60.0
+    """Ceiling for the exponential back-off of transient/network errors (seconds)."""
+
+    backoff_factor: Annotated[float, Field(ge=1, le=10)] = 2.0
+    """Multiplicative factor for exponential back-off."""
+
+    maintenance_max_delay: Annotated[float, Field(ge=0, le=86400)] = 3600.0
+    """Ceiling for the exponential back-off when the site is under maintenance
+    (seconds).  Separate from :attr:`max_delay` because a maintenance window may
+    last minutes, and a short timeout would exhaust the retries pointlessly."""
 
 
 class LogConfig(BaseModel):

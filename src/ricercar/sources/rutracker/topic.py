@@ -14,7 +14,11 @@ from playwright.async_api import Page
 from ricercar.browser.navigation import goto
 from ricercar.log import get_logger
 from ricercar.models import TopicInfo
-from ricercar.sources.base import SelectorsBrokenError, TorrentUnavailableError
+from ricercar.sources.base import (
+    SelectorsBrokenError,
+    SiteUnderMaintenanceError,
+    TorrentUnavailableError,
+)
 from ricercar.sources.rutracker.diagnose import diagnose_topic
 from ricercar.sources.rutracker.selectors import DEFAULT_SELECTORS, Selectors
 
@@ -49,6 +53,8 @@ async def open_topic(
     html = await page.content()
     issues = diagnose_topic(html, selectors)
     if issues:
+        if any("maintenance" in issue for issue in issues):
+            raise SiteUnderMaintenanceError("; ".join(issues))
         raise SelectorsBrokenError(issues)
     return parse_topic(html, page.url, selectors)
 
