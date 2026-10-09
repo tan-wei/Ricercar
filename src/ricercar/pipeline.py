@@ -606,11 +606,9 @@ class Runner:
             progress.update(pages_bar, completed=0)
             pages = source.search(results_page, task, max_pages=source.settings.max_pages)
             page_index = 0
-            label = pages_bar_label
 
             while True:
                 page_index += 1
-                asked_on_page = 0
                 # One chunk per results page: a page that fails keeps a trace that
                 # contains exactly that page, and a healthy page's trace (megabytes,
                 # with snapshots) is dropped instead of piling up for the whole task.
@@ -646,18 +644,15 @@ class Runner:
                             log.debug("Already stored: {} — added {}", hit.url, known.add_date)
                             continue
                         progress.update(torrents_bar, description=f"  {hit.title[:48]}")
-                        asked_on_page += 1
+                        # Every download reaches the tracker — wait before the request.
+                        await self._pace(source, progress, torrents_bar)
                         if await self._download_hit(source, topic_page, hit, outcome):
                             stored += 1
                             progress.advance(torrents_bar)
 
-                if asked_on_page:
-                    # This page asked the tracker for something, so pace what comes next —
-                    # the next page of this search, or the first page of the next task, both
-                    # of which are fetched where the loop starts again. A rejected download
-                    # counts: the request was made, and it is the request rate that gets an
-                    # account noticed. A hit we already have never reaches this counter.
-                    await self._wait_for_the_next_page(source, label, progress, pages_bar)
+                # Pause before paginating to the next results page.
+                progress.update(torrents_bar, description="  waiting…")
+                await self._pace(source, progress, torrents_bar)
 
         try:
             while True:
@@ -679,30 +674,24 @@ class Runner:
         finally:
             progress.remove_task(pages_bar)
 
-    async def _wait_for_the_next_page(
+    async def _pace(
         self,
         source: Source,
-        label: str,
         progress: Progress,
-        pages_bar: TaskID,
+        bar: TaskID,
     ) -> None:
-        """Wait out ``quota.page_delay_seconds``, showing the countdown on the page bar.
+        """Wait ``delay_between_actions`` seconds before the next tracker action.
 
-        Called after a page that asked the tracker for at least one torrent — see the
-        comment at the call site for why only that page waits. The countdown goes on the
-        pages bar because that is the line that would otherwise sit still, and a still
-        line for a minute looks like a hang. Ctrl-C ends the wait rather than sitting it
-        out.
+        Called **before** every action that will reach the tracker — a new results page, a
+        download, a pagination click.  The delay is shown as a brief countdown on the given
+        progress bar.  Ctrl-C ends the wait immediately.
         """
-        delay = source.settings.quota.page_delay_seconds
+        delay = source.settings.quota.delay_between_actions
         if delay <= 0:
             return
 
-        log = get_logger()
-        log.info("Waiting {}s before the next page (quota.page_delay_seconds)", delay)
-
         def countdown(left: float) -> None:
-            progress.update(pages_bar, description=f"{label} — waiting {math.ceil(left)}s")
+            progress.update(bar, description=f"  waiting {math.ceil(left)}s")
 
         try:
             await wait_between_pages(
@@ -711,7 +700,7 @@ class Runner:
                 on_tick=countdown,
             )
         finally:
-            progress.update(pages_bar, description=label)
+            progress.update(bar, description="  waiting…")
 
     async def _download_hit(
         self,
