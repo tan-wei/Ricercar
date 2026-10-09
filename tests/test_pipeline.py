@@ -791,3 +791,55 @@ def test_a_broken_selector_saves_the_page_and_skips_the_source(
     # A search that failed before it produced a page is not the task's fault, so it is not
     # held against the task that asked for it.
     assert TaskHistory(Path(run_config.run.task_history_file)).load().yields("rutracker") == {}
+
+
+@pytest.mark.integration
+def test_a_maintenance_page_increases_failures_and_continues(
+    run_config: Settings, tmp_path: Path, browser: str
+) -> None:
+    """A maintenance page raises SiteUnderMaintenanceError, which _drive catches,
+    increments failures, captures evidence, and moves on to the next task."""
+    assert browser.startswith("http")
+
+    # Create a temporary fixture root with maintenance HTML for searches.
+    fixture_dir = tmp_path / "fixtures"
+    search_dir = fixture_dir / "html" / "search"
+    search_dir.mkdir(parents=True)
+    (search_dir / "results.html").write_text(
+        "<html><body><p>the site is under maintenance, please come back later</p></body></html>",
+        encoding="utf-8",
+    )
+    # Also create dummy fixtures for the other routes so FixtureRouter.register()
+    # does not raise FileNotFoundError — they will never be navigated to.
+    topic_dir = fixture_dir / "html" / "topic"
+    topic_dir.mkdir(parents=True)
+    (topic_dir / "topic.html").write_text("<html><body></body></html>", encoding="utf-8")
+    torrent_dir = fixture_dir / "torrents"
+    torrent_dir.mkdir(parents=True)
+    (torrent_dir / "sample.torrent").write_bytes(
+        (FIXTURES / "torrents" / "sample.torrent").read_bytes(),
+    )
+
+    outcome = run_sources(cfg=run_config, offline=fixture_dir, limit=1)
+
+    # Maintenance is counted as a failure but does NOT skip the source.
+    assert outcome.stored == 0
+    assert outcome.failures == 1
+    (source_outcome,) = outcome.sources
+    assert source_outcome.hits == 0
+    # The source should NOT be skipped — maintenance is transient.
+    assert source_outcome.skipped is None
+
+    with TorrentRepository(run_config.db_path) as repo:
+        assert repo.count() == 0
+
+    # The recorder captured the maintenance evidence.
+    evidence = sorted(Path(run_config.diagnostics.failures_dir).iterdir())
+    assert evidence
+    for directory in evidence:
+        assert "maintenance" in directory.name
+        assert (directory / "page.html").is_file()
+        assert (directory / "page.png").is_file()
+        payload = json.loads((directory / "failure.json").read_text(encoding="utf-8"))
+        assert payload["trace"] == "trace.zip"
+        assert any("maintenance" in issue for issue in payload["issues"])
