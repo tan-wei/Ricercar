@@ -370,7 +370,9 @@ class Runner:
         task_results: dict[str, list[str]] = {}
         try:
             async with managed_browser(source, self.cfg) as session:
-                stale, task_results = await self._drive(source, session, tasks, budget, outcome, progress)
+                stale, task_results = await self._drive(
+                    source, session, tasks, budget, outcome, progress
+                )
         except SessionExpiredError as exc:
             outcome.failures += 1
             outcome.aborted = True
@@ -390,7 +392,9 @@ class Runner:
             if task_results:
                 _yields = self.history.yields(source.name)
                 for plan in tasks:
-                    if (stat := _yields.get(plan.origin)) is not None and plan.label in task_results:
+                    if plan.label not in task_results:
+                        continue
+                    if (stat := _yields.get(plan.origin)) is not None:
                         _task_history[plan.label] = stat
             await self.notifier.run_finished(
                 source.name,
@@ -777,7 +781,7 @@ class Runner:
         except TorrentError as exc:
             outcome.failures += 1
             log.error("Unreadable torrent from {}: {}", hit.url, exc)
-            return False
+            return None
 
         log.debug("  topic: {} (downloadable={})", info.title[:70], info.downloadable)
         for issue in meta.issues:

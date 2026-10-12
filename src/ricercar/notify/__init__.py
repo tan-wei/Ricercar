@@ -202,7 +202,8 @@ class Notifier:
                     continue
                 _tasks_with += 1
                 shown = names[:LISTED_TORRENTS]
-                more = f" … and {len(names) - LISTED_TORRENTS} more" if len(names) > LISTED_TORRENTS else ""
+                rest = len(names) - LISTED_TORRENTS
+                more = f" … and {rest} more" if rest > 0 else ""
                 # One-line history summary when available.
                 _history = ""
                 if task_history and label in task_history:
@@ -227,11 +228,12 @@ class Notifier:
             body += "".join(_sections)
 
         if stale:
-            shown = ", ".join(stale[:LISTED_DEAD])
-            more = f" … and {len(stale) - LISTED_DEAD} more" if len(stale) > LISTED_DEAD else ""
+            stale_shown = ", ".join(stale[:LISTED_DEAD])
+            stale_rest = len(stale) - LISTED_DEAD
+            stale_more = f" … and {stale_rest} more" if stale_rest > 0 else ""
             body += (
                 f"\n{len(stale)} task(s) have found nothing for {stale_days} day(s) and can "
-                f"probably be removed: {shown}{more}"
+                f"probably be removed: {stale_shown}{stale_more}"
             )
 
         return await self.send(
