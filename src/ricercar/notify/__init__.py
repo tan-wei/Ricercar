@@ -20,6 +20,7 @@ from datetime import datetime
 import apprise
 
 from ricercar.config import NotifyConfig, SearchTask, get_settings
+from ricercar.history import TaskYield
 from ricercar.log import get_logger
 
 
@@ -41,6 +42,13 @@ LISTED_DEAD = 5
 
 The interesting ones are few and the list can be hundreds long (the real configuration
 has thousands of tasks, many of which have not found anything in years).
+"""
+
+LISTED_TORRENTS = 8
+"""How many torrent names a per-task listing shows before truncating.
+
+A task can yield dozens of new torrents in one run — enough names to be informative,
+but stopping well short of a wall of text.
 """
 
 
@@ -158,6 +166,8 @@ class Notifier:
         interrupted: bool = False,
         stale: Sequence[str] = (),
         stale_days: int = 0,
+        task_results: dict[str, list[str]] | None = None,
+        task_history: dict[str, TaskYield] | None = None,
         when: datetime | None = None,
     ) -> bool:
         """Report what a run did — including what it did not get to.
@@ -165,6 +175,15 @@ class Notifier:
         *stale* are tasks that have found nothing for *stale_days* day(s) and are worth
         removing from the config (see :mod:`ricercar.history`); they are named at the end,
         because a task list can go stale for months without anyone noticing.
+
+        *task_results* maps a task label to the names of torrents it downloaded.  The
+        names are the ``TorrentMetadata.name`` values — the ``info.name`` from each
+        ``.torrent`` file, **not** the topic title.  The first few are listed per task
+        and a summary of how many tasks did / did not find anything is shown.
+
+        *task_history* maps a task label to its long-term :class:`TaskYield` stats
+        (runs, total stored, days since last hit).  When provided alongside
+        *task_results*, a one-line summary is appended to each task section.
         """
         head = "Interrupted after" if interrupted else "Downloaded"
         authors = f", {new_authors} new uploader(s)" if new_authors else ""
@@ -172,6 +191,41 @@ class Notifier:
             f"{head} {stored} new torrent(s) ({downloaded} downloaded) during {tasks} task(s), "
             f"in {elapsed:.0f}s{authors}."
         )
+
+        if task_results:
+            _sections = []
+            _tasks_with = 0
+            _tasks_without = 0
+            for label, names in sorted(task_results.items(), key=lambda kv: -len(kv[1])):
+                if not names:
+                    _tasks_without += 1
+                    continue
+                _tasks_with += 1
+                shown = names[:LISTED_TORRENTS]
+                more = f" … and {len(names) - LISTED_TORRENTS} more" if len(names) > LISTED_TORRENTS else ""
+                # One-line history summary when available.
+                _history = ""
+                if task_history and label in task_history:
+                    ys = task_history[label]
+                    _history = f"  [{ys.runs} run(s), {ys.stored} total stored"
+                    if ys.last_hit:
+                        _history += f", {ys.days_without_hit() or 0}d since last hit"
+                    _history += "]\n"
+                _sections.append(
+                    f"\n{label} ({len(names)} torrent(s)):\n"
+                    + _history
+                    + "\n".join(f"  • {n}" for n in shown)
+                    + more
+                )
+            summary_parts = []
+            if _tasks_with:
+                summary_parts.append(f"{_tasks_with} task(s) found new torrents")
+            if _tasks_without:
+                summary_parts.append(f"{_tasks_without} task(s) yielded nothing")
+            if summary_parts:
+                body += "\n\n" + ", ".join(summary_parts) + "."
+            body += "".join(_sections)
+
         if stale:
             shown = ", ".join(stale[:LISTED_DEAD])
             more = f" … and {len(stale) - LISTED_DEAD} more" if len(stale) > LISTED_DEAD else ""
@@ -179,11 +233,10 @@ class Notifier:
                 f"\n{len(stale)} task(s) have found nothing for {stale_days} day(s) and can "
                 f"probably be removed: {shown}{more}"
             )
-        return await self.send(
-            f"[{source}] Finish {stored} torrent(s) at {_stamp(when)}",
-            body,
-            notify_type=apprise.NotifyType.WARNING if interrupted else apprise.NotifyType.SUCCESS,
-        )
-
+            return await self.send(
+                f"[{source}] Finish {stored} torrent(s) at {_stamp(when)}",
+                body,
+                notify_type=apprise.NotifyType.WARNING if interrupted else apprise.NotifyType.SUCCESS,
+            )
 
 __all__ = ["Notifier"]

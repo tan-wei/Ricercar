@@ -367,9 +367,10 @@ class Runner:
         await self.notifier.run_started(source.name, [plan.task for plan in tasks])
 
         stale: list[TaskYield] = []
+        task_results: dict[str, list[str]] = {}
         try:
             async with managed_browser(source, self.cfg) as session:
-                stale = await self._drive(source, session, tasks, budget, outcome, progress)
+                stale, task_results = await self._drive(source, session, tasks, budget, outcome, progress)
         except SessionExpiredError as exc:
             outcome.failures += 1
             outcome.aborted = True
@@ -384,6 +385,13 @@ class Runner:
         finally:
             outcome.stale = len(stale)
             outcome.elapsed = time.monotonic() - started
+            # Build per-task history stats from the cache for any task that had results.
+            _task_history: dict[str, TaskYield] = {}
+            if task_results:
+                _yields = self.history.yields(source.name)
+                for plan in tasks:
+                    if (stat := _yields.get(plan.origin)) is not None and plan.label in task_results:
+                        _task_history[plan.label] = stat
             await self.notifier.run_finished(
                 source.name,
                 tasks=len(tasks),
@@ -394,6 +402,8 @@ class Runner:
                 interrupted=self.shutdown.requested,
                 stale=[stat.description or stat.key for stat in stale],
                 stale_days=self.cfg.run.stale_task_days,
+                task_results=task_results,
+                task_history=_task_history or None,
             )
         return outcome
 
@@ -405,12 +415,12 @@ class Runner:
         budget: int,
         outcome: SourceOutcome,
         progress: Progress,
-    ) -> list[TaskYield]:
+    ) -> tuple[list[TaskYield], dict[str, list[str]]]:
         """Work through the searches in two tabs: results, and downloads.
 
-        Returns the tasks that look dead after this run (see :mod:`ricercar.history`);
-        an empty list when the source aborted, since a run that did not finish is no
-        evidence about anything.
+        Returns ``(stale_tasks, task_results)`` where *stale_tasks* are tasks that look
+        dead after this run (see :mod:`ricercar.history`) and *task_results* maps each
+        task label to the torrent names it stored.
         """
         log = get_logger()
         results_page = await session.context.new_page()
@@ -419,6 +429,7 @@ class Runner:
         torrents_bar = progress.add_task(f"{source.name}: torrents", total=budget)
         failures_in_a_row = 0
         run_yields: dict[str, _TaskRun] = {}
+        task_results: dict[str, list[str]] = {}
         try:
             await self._prepare(source, session, results_page, topic_page)
 
@@ -436,8 +447,9 @@ class Runner:
 
                 seen_before = outcome.hits
                 stored_before = outcome.stored
+                task_torrents: list[str] = []
                 try:
-                    finished = await self._run_task(
+                    finished, task_torrents = await self._run_task(
                         source,
                         plan,
                         results_page,
@@ -526,6 +538,8 @@ class Runner:
                     outcome.done += 1
                     self.state.mark_completed(source.name, task)
                     progress.advance(tasks_bar)
+                    if task_torrents:
+                        task_results[plan.label] = task_torrents
         finally:
             self._record_yields(source, run_yields)
             progress.remove_task(tasks_bar)
@@ -534,13 +548,16 @@ class Runner:
             await results_page.close()
             await topic_page.close()
 
-        return self._report_stale(
-            source,
-            self.history.stale(
-                source.name,
-                min_runs=self.cfg.run.stale_task_runs,
-                min_days=self.cfg.run.stale_task_days,
+        return (
+            self._report_stale(
+                source,
+                self.history.stale(
+                    source.name,
+                    min_runs=self.cfg.run.stale_task_runs,
+                    min_days=self.cfg.run.stale_task_days,
+                ),
             ),
+            task_results,
         )
 
     def _record_yields(self, source: Source, run_yields: dict[str, _TaskRun]) -> None:
@@ -593,12 +610,17 @@ class Runner:
         outcome: SourceOutcome,
         progress: Progress,
         torrents_bar: TaskID,
-    ) -> bool:
+    ) -> tuple[bool, list[str]]:
         """Search one task and store whatever is new.
 
-        Returns whether the task ran to the end. A task cut short by an interrupt or
-        by the quota is *not* finished, so it is not recorded in the state and the next
-        run repeats it — cheaply, because what was already stored is skipped by URL.
+        Returns ``(finished, torrent_names)`` where *finished* is whether the task ran
+        to the end (as opposed to being cut short by a signal or the quota), and
+        *torrent_names* are the ``info.name`` values of the torrents actually stored
+        this run.
+
+        A task cut short by an interrupt or by the quota is *not* finished, so it is not
+        recorded in the state and the next run repeats it — cheaply, because what was
+        already stored is skipped by URL.
 
         Raises:
             SelectorsBrokenError: the results page is not what the source expects.
@@ -609,14 +631,15 @@ class Runner:
         log = get_logger()
         task = plan.task
         stored = 0
+        torrent_names: list[str] = []
         logged_in_again = False
         pages_bar_label = f"  {describe_task(task)}"
         # No total yet: how many pages this search has is the pager's to say, and it
         # says it on the first page that arrives. `max_pages` is only the ceiling.
         pages_bar = progress.add_task(pages_bar_label, total=None)
 
-        async def search_and_download() -> bool:
-            nonlocal stored
+        async def search_and_download() -> tuple[bool, list[str]]:
+            nonlocal stored, torrent_names
             stored = 0
             progress.update(pages_bar, completed=0)
             pages = source.search(results_page, task, max_pages=source.settings.max_pages)
@@ -631,7 +654,7 @@ class Runner:
                     try:
                         results = await pages.__anext__()
                     except StopAsyncIteration:
-                        return True
+                        return True, torrent_names
 
                     hits = results.hits
                     if results.total is not None:
@@ -649,11 +672,11 @@ class Runner:
                         outcome.hits += 1
                         if self.shutdown.requested:
                             # Cut short by a signal: this task has to be retried.
-                            return False
+                            return False, torrent_names
                         if stored >= budget:
                             # The quota (or --limit) said stop — that is a planned end,
                             # not an interrupted one.
-                            return True
+                            return True, torrent_names
                         if (known := self.repo.stored(hit.url)) is not None:
                             outcome.known += 1
                             log.debug("Already stored: {} — added {}", hit.url, known.add_date)
@@ -661,8 +684,10 @@ class Runner:
                         progress.update(torrents_bar, description=f"  {hit.title[:48]}")
                         # Every download reaches the tracker — wait before the request.
                         await self._pace(source, progress, torrents_bar)
-                        if await self._download_hit(source, topic_page, hit, outcome):
+                        name = await self._download_hit(source, topic_page, hit, outcome)
+                        if name is not None:
                             stored += 1
+                            torrent_names.append(name)
                             progress.advance(torrents_bar)
 
                 # Pause before paginating to the next results page.
@@ -723,8 +748,8 @@ class Runner:
         topic_page: Page,
         hit: SearchHit,
         outcome: SourceOutcome,
-    ) -> bool:
-        """Fetch, parse and store one torrent. Returns whether it was stored."""
+    ) -> str | None:
+        """Fetch, parse and store one torrent. Returns the torrent name when stored."""
         log = get_logger()
         outcome.downloaded += 1
         try:
@@ -735,17 +760,17 @@ class Runner:
             )
         except TorrentUnavailableError as exc:
             log.info("Skipping {}: {}", hit.url, exc)
-            return False
+            return None
         except SelectorsBrokenError as exc:
             outcome.failures += 1
             await self.recorder.capture(topic_page, "topic-page", issues=exc.issues, note=hit.url)
             log.error("{}: the topic page does not look right — {}", hit.url, "; ".join(exc.issues))
-            return False
+            return None
         except PlaywrightTimeout as exc:
             outcome.failures += 1
             await self.recorder.capture(topic_page, "download-timeout", note=f"{hit.url}: {exc}")
             log.warning("Giving up on {}: {}", hit.url, exc)
-            return False
+            return None
 
         try:
             meta = parse_file(path)
@@ -776,7 +801,7 @@ class Runner:
                     same.add_date,
                     same.url,
                 )
-            return False
+            return None
 
         outcome.stored += 1
         log.info(
@@ -786,7 +811,7 @@ class Runner:
             meta.file_count,
             meta.md5,
         )
-        return True
+        return meta.name
 
     # ── Preparation ─────────────────────────────────────────────────────
 
