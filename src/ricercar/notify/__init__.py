@@ -233,10 +233,12 @@ class Notifier:
                 f"\n{len(stale)} task(s) have found nothing for {stale_days} day(s) and can "
                 f"probably be removed: {shown}{more}"
             )
-            return await self.send(
-                f"[{source}] Finish {stored} torrent(s) at {_stamp(when)}",
-                body,
-                notify_type=apprise.NotifyType.WARNING if interrupted else apprise.NotifyType.SUCCESS,
-            )
+
+        return await self.send(
+            f"[{source}] Finish {stored} torrent(s) at {_stamp(when)}",
+            body,
+            notify_type=apprise.NotifyType.WARNING if interrupted else apprise.NotifyType.SUCCESS,
+        )
+
 
 __all__ = ["Notifier"]
