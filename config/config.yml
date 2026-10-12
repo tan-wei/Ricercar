@@ -145,7 +145,7 @@ sources:
       # Art studies, Cultural studies (Humanities)
       Art_Studies_Culturology: 1684
       # Drawing, graphic design (Books & magazines)
-      Drawing_Graphic_Design: 765
+      # Drawing_Graphic_Design: 765
     # Optional override of the built-in selectors/URLs/literals, so a site redesign can
     # be patched without touching code. Any subset of the keys in
     # src/ricercar/sources/rutracker/selectors.py is accepted, e.g.:
