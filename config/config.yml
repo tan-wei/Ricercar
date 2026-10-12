@@ -54,9 +54,98 @@ sources:
       password: ""
     # The sections worth watching, name → the site's `f` id. A task that names no
     # category searches all of them — that is what "every category" means, and what
-    # keeps a keyword search out of the sections nobody asked about. See
-    # config.example.yml for the full list of rutracker's classical-music sections.
-    categories: {}
+    # keeps a keyword search out of the sections nobody asked about.
+    #
+    # Only sections related to classical / academic music and classical painting / art
+    # are listed.  IDs and names are verified against the current Rutracker forum layout.
+    categories:
+      # ── Classical music video ───────────────────────────────────────
+      # Classical & modern academic music (Video)
+      Classic_Modern_Video: 445
+      # Classical & modern academic music (DVD Video)
+      Classic_Modern_DVD_Video: 984
+      # Opera, Operetta & Musical (Video)
+      Opera_Video: 702
+      # Opera, Operetta & Musical (DVD Video)
+      Opera_DVD_Video: 983
+      # Ballet & modern choreography (Video)
+      Ballet_Video: 1990
+      # Classics in modern arrangement, Classical Crossover (Video)
+      Classic_Crossover_Video: 1793
+      # Ballet & modern choreography (DVD Video)
+      Ballet_DVD_Video: 2352
+      # Classics in modern arrangement, Classical Crossover (DVD Video)
+      Classic_Crossover_DVD_Video: 2384
+      # Classical music, Opera, Ballet, Musical (Unofficial DVD Video)
+      Classic_Unofficial_DVD_Video: 2263
+      # Classical & modern academic music (HD Video)
+      Classic_Modern_HD_Video: 1812
+      # Opera, Operetta & Musical (HD Video)
+      Opera_HD_Video: 655
+      # Ballet & modern choreography (HD Video)
+      Ballet_HD_Video: 1777
+
+      # ── Classical music audio lossless ──────────────────────────────
+      # Complete works collections & multi-disc releases (lossless)
+      Multiple_Disc_Lossless: 560
+      # Opera (lossless)
+      Opera_Lossless: 794
+      # Vocal music (lossless)
+      Vocal_Music_Lossless: 556
+      # Choral music (lossless)
+      Choral_Music_Lossless: 2307
+      # Orchestral music (lossless)
+      Orchestral_Lossless: 557
+      # Concerto for instrument & orchestra (lossless)
+      Concerto_Lossless: 2308
+      # Chamber instrumental music (lossless)
+      Chamber_Lossless: 558
+      # Solo instrumental music (lossless)
+      Solo_Lossless: 793
+      # Sacred chants & music (lossy & lossless)
+      Chants: 1395
+
+      # ── Classical music audio lossy ─────────────────────────────────
+      # Complete works collections & multi-disc releases (lossy)
+      Multiple_Disc_Lossy: 436
+      # Vocal & choral music (lossy)
+      Vocal_And_Choral_Music_Lossy: 2309
+      # Orchestral music (lossy)
+      Orchestral_Lossy: 2310
+      # Chamber & solo instrumental music (lossy)
+      Chamber_And_Solo_Lossy: 2311
+
+      # ── Modern classical / crossover ────────────────────────────────
+      # Classics in modern arrangement, Classical Crossover (lossy & lossless)
+      Classic_Modern_Crossover_Lossless_Lossy: 969
+      # Modern Classical, Electroacoustic (lossless)
+      Modern_Classical_Lossless: 1871
+      # Modern Classical, Electroacoustic (lossy)
+      Modern_Classical_Lossy: 1867
+
+      # ── Hi-Res classical music ──────────────────────────────────────
+      # Classical instrumental music, Classical Crossover (Hi-Res)
+      Classical_Instrumental_HiRes: 1884
+      # Classical vocal & choral music, Classical Crossover (Hi-Res)
+      Classical_Vocal_Choral_HiRes: 1164
+
+      # ── Digitised classical (rips from analog media) ────────────────
+      # Classics & classics in modern arrangement (rips)
+      Classic_And_Modern_Digitised: 1660
+
+      # ── Sheet music & music literature ──────────────────────────────
+      # Academic music (Sheet music & Media CD)
+      Academic_Music_Scores: 944
+      # Music literature & theory
+      Music_Literature_Theory: 2074
+
+      # ── Classical painting & art ────────────────────────────────────
+      # [Doc] Art, art history
+      Art_History_Documentary: 2538
+      # Art studies, Cultural studies (Humanities)
+      Art_Studies_Culturology: 1684
+      # Drawing, graphic design (Books & magazines)
+      Drawing_Graphic_Design: 765
     # Optional override of the built-in selectors/URLs/literals, so a site redesign can
     # be patched without touching code. Any subset of the keys in
     # src/ricercar/sources/rutracker/selectors.py is accepted, e.g.:

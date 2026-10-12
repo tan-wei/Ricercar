@@ -48,37 +48,54 @@ sources:
       # run waits for you in the browser window (`--login-timeout`).
     selectors_file: null # optional YAML overriding URLs/selectors/literals
     # The sections to watch, name → the site's forum id (`f`), in the order to search
-    # them. A task that names no category searches all of them. rutracker's
-    # classical-music sections, as the legacy tool listed them:
+    # them. A task that names no category searches all of them. Only classical/academic
+    # music and classical painting/art sections are included. IDs are verified against
+    # the current Rutracker forum layout.
     categories:
+      # ── Classical music video ───────────────────────────────────────
       Classic_Modern_Video: 445
       Classic_Modern_DVD_Video: 984
       Opera_Video: 702
       Opera_DVD_Video: 983
       Ballet_Video: 1990
+      Classic_Crossover_Video: 1793
+      Ballet_DVD_Video: 2352
+      Classic_Crossover_DVD_Video: 2384
+      Classic_Unofficial_DVD_Video: 2263
+      Classic_Modern_HD_Video: 1812
+      Opera_HD_Video: 655
+      Ballet_HD_Video: 1777
+      # ── Classical music audio lossless ──────────────────────────────
       Multiple_Disc_Lossless: 560
-      Multiple_Disc_Lossy: 436
       Opera_Lossless: 794
       Vocal_Music_Lossless: 556
-      Vocal_And_Choral_Music_Lossy: 2309
+      Choral_Music_Lossless: 2307
       Orchestral_Lossless: 557
-      Orchestral_Lossy: 2310
       Concerto_Lossless: 2308
       Chamber_Lossless: 558
       Solo_Lossless: 793
-      Chamber_And_Solo_Lossy: 2311
       Chants: 1395
-      Choral_Music_Lossless: 2307
+      # ── Classical music audio lossy ─────────────────────────────────
+      Multiple_Disc_Lossy: 436
+      Vocal_And_Choral_Music_Lossy: 2309
+      Orchestral_Lossy: 2310
+      Chamber_And_Solo_Lossy: 2311
+      # ── Modern classical / crossover ────────────────────────────────
       Classic_Modern_Crossover_Lossless_Lossy: 969
-      Eastern_European_Folk_Lossy: 1130
-      Eastern_European_Folk_Lossless: 1131
-      Western_European_Folk_Lossy: 1132
-      Western_European_Folk_Lossless: 1133
-      Hi_Res_Stereo_And_Multichannel: 1299
+      Modern_Classical_Lossless: 1871
+      Modern_Classical_Lossy: 1867
+      # ── Hi-Res classical music ──────────────────────────────────────
       Classical_Instrumental_HiRes: 1884
       Classical_Vocal_Choral_HiRes: 1164
+      # ── Digitised classical (rips from analog media) ────────────────
       Classic_And_Modern_Digitised: 1660
-      Alt_Punk_Independent_HiRes: 1396
+      # ── Sheet music & music literature ──────────────────────────────
+      Academic_Music_Scores: 944
+      Music_Literature_Theory: 2074
+      # ── Classical painting & art ────────────────────────────────────
+      Art_History_Documentary: 2538
+      Art_Studies_Culturology: 1684
+      Drawing_Graphic_Design: 765
     # One entry per search: `text` (keywords), `author` (uploader), `category` (a section
     # id) — and a task that names no category searches every section listed above, which
     # is what the legacy tool did for each of its tasks. Quote the wildcard:
