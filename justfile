@@ -141,6 +141,14 @@ ci: check test
 
 # ── Run ───────────────────────────────────────────────────────────────────
 
+# One-shot: start the browser if not running, then run once
+go *args="":
+    @if ! curl -fsS "http://127.0.0.1:9222/json/version" >/dev/null 2>&1; then \
+        echo "Starting the browser…"; \
+        just browser; \
+    fi
+    @just run {{args}}
+
 # Run on the schedule — the "leave it running" mode (Ctrl-C once stops the cycle, twice leaves)
 run *args="":
     uv run python -m ricercar {{args}}
