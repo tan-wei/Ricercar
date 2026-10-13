@@ -29,7 +29,7 @@ def _stamp(when: datetime | None) -> str:
     return (when or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
 
 
-LISTED_TASKS = 10
+LISTED_TASKS = 9999
 """How many tasks a start notification lists before it stops counting them out.
 
 One configured task can stand for dozens of searches — one per configured section — and
@@ -37,14 +37,14 @@ a run can be thousands of them: an email that enumerates them all is a wall of t
 nobody reads.
 """
 
-LISTED_DEAD = 5
+LISTED_DEAD = 9999
 """How many dead-looking tasks a finish notification names.
 
 The interesting ones are few and the list can be hundreds long (the real configuration
 has thousands of tasks, many of which have not found anything in years).
 """
 
-LISTED_TORRENTS = 8
+LISTED_TORRENTS = 9999
 """How many torrent names a per-task listing shows before truncating.
 
 A task can yield dozens of new torrents in one run — enough names to be informative,
@@ -130,6 +130,8 @@ class Notifier:
             log.debug("Notifications are off — not sending {!r}", title)
             return False
 
+        # Convert to \r\n so Windows mail clients display line breaks correctly.
+        body = body.replace("\n", "\r\n")
         delivered = await asyncio.to_thread(self._client.notify, body, title, notify_type)
         if delivered:
             log.info("Notified {} target(s): {}", self.targets, title)

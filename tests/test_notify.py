@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from ricercar.config import SearchTask
-from ricercar.notify import LISTED_DEAD, LISTED_TASKS, Notifier, _listing
+from ricercar.notify import Notifier, _listing
 
 
 def test_a_short_run_is_listed_in_full() -> None:
@@ -16,15 +16,13 @@ def test_a_short_run_is_listed_in_full() -> None:
     assert listing == "- Bach\n- (no text) [author=someone, category=794]"
 
 
-def test_a_long_run_is_summarised() -> None:
-    # One configured task can be dozens of searches and a run thousands of them, so the
-    # message lists the first few and counts the rest.
+def test_all_tasks_are_listed() -> None:
     tasks = [SearchTask(text=f"task {index}") for index in range(120)]
 
     listing = _listing(tasks)
 
-    assert listing.count("\n") == LISTED_TASKS
-    assert listing.endswith(f"- … and {120 - LISTED_TASKS} more")
+    assert len(listing.splitlines()) == 120
+    assert "more" not in listing
 
 
 def test_a_run_without_tasks_says_so() -> None:
@@ -69,7 +67,7 @@ def test_a_finish_notification_names_the_tasks_worth_removing() -> None:
     assert "Bach, ghost" in sent["body"]
 
 
-def test_a_long_list_of_dead_tasks_is_summarised() -> None:
+def test_all_dead_tasks_are_listed() -> None:
     notifier = Notifier()
     sent = _capture_into(notifier)
 
@@ -85,7 +83,8 @@ def test_a_long_list_of_dead_tasks_is_summarised() -> None:
     )
 
     assert "40 task(s)" in sent["body"]
-    assert f"… and {40 - LISTED_DEAD} more" in sent["body"]
+    for i in range(40):
+        assert f"task {i}" in sent["body"]
 
 
 def test_a_healthy_finish_says_nothing_about_tasks() -> None:

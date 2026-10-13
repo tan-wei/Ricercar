@@ -62,7 +62,7 @@ One broken page is a bad page; two in a row mean the site changed, and continuin
 would only produce more copies of the same evidence.
 """
 
-LISTED_STALE = 5
+LISTED_STALE = 9999
 """How many dead-looking tasks the end-of-run warning names before it says "… and N more".
 
 The list is 5,969 tasks long in the real configuration, so a warning that named all of
