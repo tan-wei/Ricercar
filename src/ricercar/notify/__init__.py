@@ -121,18 +121,21 @@ class Notifier:
     ) -> bool:
         """Deliver one notification; ``False`` when it is off or failed.
 
-        apprise talks to remote services synchronously, so the call is moved off
-        the event loop: a slow mail server must never stall the browser. Per-service
-        timeouts go in the URL, e.g. ``mailto://…?timeout=15``.
+        Messages are formatted as Markdown — apprise converts it to HTML for email
+        and renders it natively for Discord, Slack, Telegram, etc.
         """
         log = get_logger()
         if not self.enabled:
             log.debug("Notifications are off — not sending {!r}", title)
             return False
 
-        # Convert to \r\n so Windows mail clients display line breaks correctly.
-        body = body.replace("\n", "\r\n")
-        delivered = await asyncio.to_thread(self._client.notify, body, title, notify_type)
+        delivered = await asyncio.to_thread(
+            self._client.notify,
+            body,
+            title,
+            notify_type,
+            body_format=apprise.NotifyFormat.MARKDOWN,
+        )
         if delivered:
             log.info("Notified {} target(s): {}", self.targets, title)
         else:
@@ -153,7 +156,7 @@ class Notifier:
         """Announce a run and what it is about to search for."""
         return await self.send(
             f"[{source}] Going to start {len(tasks)} task(s) at {_stamp(when)}",
-            f"Start {len(tasks)} task(s):\n{_listing(tasks)}",
+            f"## {source}\n\n**{len(tasks)} task(s)**\n\n{_listing(tasks)}",
         )
 
     async def run_finished(
@@ -189,15 +192,17 @@ class Notifier:
         """
         head = "Interrupted after" if interrupted else "Downloaded"
         authors = f", {new_authors} new uploader(s)" if new_authors else ""
-        body = (
+        lines = [
+            f"## {source}",
+            "",
             f"{head} {stored} new torrent(s) ({downloaded} downloaded) during {tasks} task(s), "
-            f"in {elapsed:.0f}s{authors}."
-        )
+            f"in {elapsed:.0f}s{authors}.",
+        ]
 
         if task_results:
-            _sections = []
             _tasks_with = 0
             _tasks_without = 0
+            task_sections = []
             for label, names in sorted(task_results.items(), key=lambda kv: -len(kv[1])):
                 if not names:
                     _tasks_without += 1
@@ -205,42 +210,42 @@ class Notifier:
                 _tasks_with += 1
                 shown = names[:LISTED_TORRENTS]
                 rest = len(names) - LISTED_TORRENTS
-                more = f" … and {rest} more" if rest > 0 else ""
+                more = f"\n*… and {rest} more*" if rest > 0 else ""
                 # One-line history summary when available.
                 _history = ""
                 if task_history and label in task_history:
                     ys = task_history[label]
-                    _history = f"  [{ys.runs} run(s), {ys.stored} total stored"
+                    _history = f"*[{ys.runs} run(s), {ys.stored} total stored"
                     if ys.last_hit:
                         _history += f", {ys.days_without_hit() or 0}d since last hit"
-                    _history += "]\n"
-                _sections.append(
-                    f"\n{label} ({len(names)} torrent(s)):\n"
-                    + _history
-                    + "\n".join(f"  • {n}" for n in shown)
-                    + more
-                )
+                    _history += "*](_)\n"
+                task_sections.append(f"\n### {label} ({len(names)} torrent(s))\n")
+                if _history:
+                    task_sections.append(_history)
+                task_sections.append("\n".join(f"- {n}" for n in shown) + more + "\n")
             summary_parts = []
             if _tasks_with:
                 summary_parts.append(f"{_tasks_with} task(s) found new torrents")
             if _tasks_without:
                 summary_parts.append(f"{_tasks_without} task(s) yielded nothing")
             if summary_parts:
-                body += "\n\n" + ", ".join(summary_parts) + "."
-            body += "".join(_sections)
+                lines.append("")
+                lines.append("**" + ", ".join(summary_parts) + ".**")
+            lines.extend(task_sections)
 
         if stale:
             stale_shown = ", ".join(stale[:LISTED_DEAD])
             stale_rest = len(stale) - LISTED_DEAD
             stale_more = f" … and {stale_rest} more" if stale_rest > 0 else ""
-            body += (
-                f"\n{len(stale)} task(s) have found nothing for {stale_days} day(s) and can "
+            lines.append("")
+            lines.append(
+                f"{len(stale)} task(s) have found nothing for {stale_days} day(s) and can "
                 f"probably be removed: {stale_shown}{stale_more}"
             )
 
         return await self.send(
             f"[{source}] Finish {stored} torrent(s) at {_stamp(when)}",
-            body,
+            "\n".join(lines),
             notify_type=apprise.NotifyType.WARNING if interrupted else apprise.NotifyType.SUCCESS,
         )
 
