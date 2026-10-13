@@ -81,17 +81,16 @@ _SELECT_MD5 = "SELECT url FROM url_table WHERE md5 = ?;"
 _STORED_COLUMNS = "url, name, download_size, md5, add_date"
 _SELECT_STORED_URL = f"SELECT {_STORED_COLUMNS} FROM url_table WHERE url = ?;"
 _SELECT_STORED_MD5 = f"SELECT {_STORED_COLUMNS} FROM url_table WHERE md5 = ?;"
-# A range on the text date, not `DATE(add_date) = DATE(...)`: the format is
-# `YYYY-MM-DD HH:MM:SS`, so today's rows are a printable range — and unlike a function
-# on the column, a range uses idx_url_table_add_date. Both bounds are inclusive/exclusive
-# so this stays equivalent to comparing the dates (a row dated tomorrow is not today).
+# A sliding 24-hour window, not a fixed day: a task at 23:59 and another at 00:02
+# both count the past 24 hours, so the quota is never reset by the midnight boundary.
+# Both bounds use datetime() to compare at sub-day precision.
 _COUNT_TODAY = (
-    "SELECT COUNT(*) FROM url_table WHERE add_date >= DATE('now','localtime') "
-    "AND add_date < DATE('now','localtime','+1 day');"
+    "SELECT COUNT(*) FROM url_table WHERE add_date >= datetime('now','localtime','-1 day') "
+    "AND add_date <= datetime('now','localtime');"
 )
 _COUNT_TODAY_FROM = (
-    "SELECT COUNT(*) FROM url_table WHERE add_date >= DATE('now','localtime') "
-    "AND add_date < DATE('now','localtime','+1 day') AND url LIKE ?;"
+    "SELECT COUNT(*) FROM url_table WHERE add_date >= datetime('now','localtime','-1 day') "
+    "AND add_date <= datetime('now','localtime') AND url LIKE ?;"
 )
 
 
