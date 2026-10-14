@@ -429,8 +429,10 @@ class Runner:
         log = get_logger()
         results_page = await session.context.new_page()
         topic_page = await session.context.new_page()
-        tasks_bar = progress.add_task(f"{source.name}: tasks", total=len(plans))
+        # Order matters: Rich displays bars in creation order — torrents (quota) on top,
+        # then tasks, then per-task sub-bars (browsing, downloading).
         torrents_bar = progress.add_task(f"{source.name}: torrents", total=budget)
+        tasks_bar = progress.add_task(f"{source.name}: tasks", total=len(plans))
         failures_in_a_row = 0
         run_yields: dict[str, _TaskRun] = {}
         task_results: dict[str, list[str]] = {}
@@ -617,6 +619,11 @@ class Runner:
     ) -> tuple[bool, list[str]]:
         """Search one task and store whatever is new.
 
+        The work is split into two phases:
+        1. **Browse** — paginate through every results page and collect all new hits.
+        2. **Download** — download the collected hits in one pass, with a dedicated
+           progress bar showing ``downloaded / total new``.
+
         Returns ``(finished, torrent_names)`` where *finished* is whether the task ran
         to the end (as opposed to being cut short by a signal or the quota), and
         *torrent_names* are the ``info.name`` values of the torrents actually stored
@@ -634,37 +641,32 @@ class Runner:
         """
         log = get_logger()
         task = plan.task
-        stored = 0
         torrent_names: list[str] = []
         logged_in_again = False
-        pages_bar_label = f"  {describe_task(task)}"
+        pages_bar_label = f"  browsing: {describe_task(task)}"
         # No total yet: how many pages this search has is the pager's to say, and it
         # says it on the first page that arrives. `max_pages` is only the ceiling.
         pages_bar = progress.add_task(pages_bar_label, total=None)
+        downloads_bar: TaskID | None = None
 
-        async def search_and_download() -> tuple[bool, list[str]]:
-            nonlocal stored, torrent_names
-            stored = 0
+        async def browse() -> tuple[bool, list[SearchHit]]:
+            """Paginate through all results, return new (not yet stored) hits."""
+            nonlocal downloads_bar
             progress.update(pages_bar, completed=0)
             pages = source.search(results_page, task, max_pages=source.settings.max_pages)
             page_index = 0
+            new_hits: list[SearchHit] = []
 
             while True:
                 page_index += 1
-                # One chunk per results page: a page that fails keeps a trace that
-                # contains exactly that page, and a healthy page's trace (megabytes,
-                # with snapshots) is dropped instead of piling up for the whole task.
                 async with self.recorder.chunk(f"{describe_task(task)} — page {page_index}"):
                     try:
                         results = await pages.__anext__()
                     except StopAsyncIteration:
-                        return True, torrent_names
+                        return True, new_hits
 
                     hits = results.hits
                     if results.total is not None:
-                        # What the tracker says this search holds, bounded by what the
-                        # configuration allows — a bar sized by max_pages would read
-                        # "of 50" for a search that has ten pages and stop there.
                         progress.update(
                             pages_bar, total=min(results.total, source.settings.max_pages)
                         )
@@ -675,35 +677,58 @@ class Runner:
                     for hit in hits:
                         outcome.hits += 1
                         if self.shutdown.requested:
-                            # Cut short by a signal: this task has to be retried.
-                            return False, torrent_names
-                        if stored >= budget:
-                            # The quota (or --limit) said stop — that is a planned end,
-                            # not an interrupted one.
-                            return True, torrent_names
+                            return False, new_hits
+                        # Check whether the database already has this URL.
                         if (known := self.repo.stored(hit.url)) is not None:
                             outcome.known += 1
                             log.debug("Already stored: {} — added {}", hit.url, known.add_date)
                             continue
-                        progress.update(torrents_bar, description=f"  {hit.title[:48]}")
-                        # Every download reaches the tracker — wait before the request.
-                        await self._pace(source, progress, torrents_bar)
-                        name = await self._download_hit(source, topic_page, hit, outcome)
-                        if name is not None:
-                            stored += 1
-                            torrent_names.append(name)
-                            progress.advance(torrents_bar)
+                        new_hits.append(hit)
 
                 # Pause before paginating to the next results page.
-                progress.update(torrents_bar, description="  waiting…")
                 await self._pace(source, progress, torrents_bar)
+
+            return True, new_hits  # pragma: no cover — loop above returns
+
+        async def download_all(new_hits: list[SearchHit]) -> list[str]:
+            """Download every hit in *new_hits*, respecting budget and shutdown."""
+            nonlocal downloads_bar
+            desc = f"    downloading: 0/{len(new_hits)}"
+            downloads_bar = progress.add_task(desc, total=len(new_hits))
+            stored: list[str] = []
+            try:
+                for idx, hit in enumerate(new_hits):
+                    if self.shutdown.requested:
+                        break
+                    if len(stored) >= budget:
+                        break
+                    progress.update(
+                        downloads_bar,
+                        description=f"    downloading: {idx}/{len(new_hits)} | {hit.title[:40]}",
+                    )
+                    await self._pace(source, progress, torrents_bar)
+                    name = await self._download_hit(source, topic_page, hit, outcome)
+                    if name is not None:
+                        stored.append(name)
+                        progress.advance(torrents_bar)
+                    progress.advance(downloads_bar)
+                return stored
+            finally:
+                progress.remove_task(downloads_bar)
+                downloads_bar = None
 
         try:
             while True:
                 try:
-                    return await call(
-                        describe_task(task), search_and_download, policies=self.policies
+                    finished, new_hits = await call(
+                        f"browse: {describe_task(task)}", browse, policies=self.policies
                     )
+                    if not finished:
+                        return False, []
+                    if not new_hits:
+                        return True, []
+                    torrent_names = await download_all(new_hits)
+                    return True, torrent_names
                 except SessionExpiredError as exc:
                     if logged_in_again:
                         raise
@@ -717,6 +742,8 @@ class Runner:
                     )
         finally:
             progress.remove_task(pages_bar)
+            if downloads_bar is not None:
+                progress.remove_task(downloads_bar)
 
     async def _pace(
         self,
