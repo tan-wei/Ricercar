@@ -891,10 +891,39 @@ class Runner:
         what comes back is the concrete ones — what the progress bars, the resume state
         and the quota then count. Tasks finished earlier today are dropped when resuming,
         which is what makes an interrupted run pick up where it stopped.
+
+        When resuming, any task that was **allocated** earlier today but not yet completed
+        is prioritised — random sampling only fills the remaining slots, so a run
+        interrupted by the quota picks up exactly the tasks it had not reached yet.
         """
         log = get_logger()
         chosen = list(source.settings.must_complete_tasks)
         pool = list(source.settings.tasks)
+
+        if self.resume:
+            done = self.state.completed_today(source.name)
+            allocated = self.state.source(source.name).allocated
+            unfinished = allocated - done
+
+            if unfinished:
+                # Pick the unfinished tasks from the pool first, so the next run
+                # continues where it left off.
+                log.info(
+                    "{}: resuming — {} task(s) were allocated but not finished yet",
+                    source.name,
+                    len(unfinished),
+                )
+                # must_complete tasks are always included; plain tasks are added if
+                # they were allocated earlier and aren't done.
+                must_keys = {task_key(t) for t in source.settings.must_complete_tasks}
+                leftover = [
+                    t for t in pool if task_key(t) in unfinished and task_key(t) not in must_keys
+                ]
+                chosen.extend(leftover)
+                # Remove the unfinished ones from the pool so random sampling
+                # does not pick them again.
+                pool = [t for t in pool if task_key(t) not in unfinished]
+
         if pool:
             chosen.extend(random.sample(pool, min(source.settings.random_choice, len(pool))))
 
@@ -928,6 +957,10 @@ class Runner:
                     len(tasks),
                 )
             tasks = remaining
+
+        # Remember which tasks were allocated today, so the next run's resume
+        # knows what was left unfinished.
+        self.state.mark_allocated(source.name, {plan.key for plan in tasks})
         return tasks
 
     async def _diagnose(self, source: Source, page: Page) -> tuple[str, ...]:

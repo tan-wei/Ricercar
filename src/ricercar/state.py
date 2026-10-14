@@ -45,6 +45,8 @@ class SourceState:
     """Every uploader seen so far."""
     completed: dict[str, str] = field(default_factory=dict)
     """Task key → ISO timestamp of the run that finished it."""
+    allocated: set[str] = field(default_factory=set)
+    """Task keys allocated so far today, for resume-sequential logic."""
     last_run: str | None = None
     """ISO timestamp of the last run against this source."""
 
@@ -60,11 +62,14 @@ class SourceState:
         the whole history would grow the file without ever being read.
         """
         self.completed = {key: stamp for key, stamp in self.completed.items() if stamp[:10] == day}
+        # Also prune allocated — a new day means a fresh allocation.
+        self.allocated = set() if not day else self.allocated
 
     def to_json(self) -> dict[str, object]:
         return {
             "authors": sorted(self.authors),
             "completed": dict(sorted(self.completed.items())),
+            "allocated": sorted(self.allocated),
             "last_run": self.last_run,
         }
 
@@ -74,12 +79,14 @@ class SourceState:
             return cls()
         authors = data.get("authors")
         completed = data.get("completed")
+        allocated = data.get("allocated")
         last_run = data.get("last_run")
         return cls(
             authors={str(a) for a in authors} if isinstance(authors, list) else set(),
             completed={str(k): str(v) for k, v in completed.items()}
             if isinstance(completed, dict)
             else {},
+            allocated={str(k) for k in allocated} if isinstance(allocated, list) else set(),
             last_run=str(last_run) if last_run else None,
         )
 
@@ -178,6 +185,12 @@ class StateStore:
         state = self.source(name)
         state.completed[task_key(task)] = moment
         state.last_run = moment
+        self.save()
+
+    def mark_allocated(self, name: str, keys: set[str]) -> None:
+        """Record which tasks were allocated this run, so resume can pick up leftovers."""
+        state = self.source(name)
+        state.allocated |= keys
         self.save()
 
 
