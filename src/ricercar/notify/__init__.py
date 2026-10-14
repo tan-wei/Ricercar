@@ -52,20 +52,35 @@ but stopping well short of a wall of text.
 """
 
 
-def _describe(task: SearchTask) -> str:
+def _category_name(task: SearchTask, source: str) -> str:
+    """The human-readable section name for a task's category, or the id as a fallback."""
+    if task.category is None or not source:
+        return str(task.category) if task.category is not None else ""
+    cfg = get_settings().sources.get(source)
+    if cfg is None:
+        return str(task.category)
+    # categories is dict[str, int]; reverse lookup.
+    for name, cat_id in cfg.categories.items():
+        if cat_id == task.category:
+            return name
+    return str(task.category)
+
+
+def _describe(task: SearchTask, source: str = "") -> str:
     """One line per search task, the way the legacy notification listed them."""
     filters = []
     if task.author:
         filters.append(f"author={task.author}")
     if task.category is not None:
-        filters.append(f"category={task.category}")
+        cat = _category_name(task, source)
+        filters.append(f"category={cat}")
     text = task.text or "(no text)"
     return f"{text} [{', '.join(filters)}]" if filters else text
 
 
-def _listing(tasks: Sequence[SearchTask]) -> str:
+def _listing(tasks: Sequence[SearchTask], source: str = "") -> str:
     """The searches a run will do, trimmed to something worth reading."""
-    lines = [f"- {_describe(task)}" for task in tasks[:LISTED_TASKS]]
+    lines = [f"- {_describe(task, source)}" for task in tasks[:LISTED_TASKS]]
     if len(tasks) > LISTED_TASKS:
         lines.append(f"- … and {len(tasks) - LISTED_TASKS} more")
     return "\n".join(lines) or "- (no tasks configured)"
