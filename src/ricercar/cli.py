@@ -529,7 +529,9 @@ def _add_discovered(settings: Settings) -> int:
         # Bootstrap: create one from the default config.yml.
         default = Path("config/config.yml")
         if not default.is_file():
-            log.error("Neither config/config.local.yml nor config/config.yml exist — cannot add tasks.")
+            log.error(
+                "Neither config/config.local.yml nor config/config.yml exist — cannot add tasks."
+            )
             return 1
         log.info("Creating config/config.local.yml from config/config.yml")
         config_path.write_text(default.read_text(encoding="utf-8"), encoding="utf-8")
