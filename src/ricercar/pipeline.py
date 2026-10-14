@@ -294,6 +294,9 @@ class Runner:
         )
         self.notifier = notifier if notifier is not None else Notifier.from_config(self.cfg.notify)
         self.repo = TorrentRepository(self.cfg.db_path)
+        from ricercar.discovery import DiscoveredUploaders
+
+        self.discovered = DiscoveredUploaders(Path(self.cfg.run.discovered_uploaders_file))
 
     # ── Entry point ─────────────────────────────────────────────────────
 
@@ -318,6 +321,7 @@ class Runner:
                 finally:
                     self.state.save()
                     self.history.save()
+                    self.discovered.save()
         finally:
             self.shutdown.restore()
 
@@ -671,9 +675,17 @@ class Runner:
                             pages_bar, total=min(results.total, source.settings.max_pages)
                         )
                     progress.advance(pages_bar)
-                    outcome.new_authors += len(
-                        self.state.remember_authors(source.name, [hit.author for hit in hits])
+                    new_authors = self.state.remember_authors(
+                        source.name, [hit.author for hit in hits]
                     )
+                    outcome.new_authors += len(new_authors)
+                    for author in new_authors:
+                        cat = task.category
+                        self.discovered.record(
+                            source.name,
+                            author,
+                            section=cat if isinstance(cat, int) else None,
+                        )
                     for hit in hits:
                         outcome.hits += 1
                         if self.shutdown.requested:

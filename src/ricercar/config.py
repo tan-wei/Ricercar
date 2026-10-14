@@ -294,6 +294,8 @@ class RunConfig(BaseModel):
     after ``stale_task_runs`` runs, so a fresh configuration is never nagged."""
     stale_task_runs: Annotated[int, Field(ge=1)] = 5
     """How many runs a task needs before its age is trusted enough to judge it."""
+    discovered_uploaders_file: str = str(DATA_DIR / "discovered_uploaders.json")
+    """Where newly discovered uploaders are recorded (see :mod:`ricercar.discovery`)."""
 
 
 class DiagnosticsConfig(BaseModel):

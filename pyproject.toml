@@ -21,6 +21,7 @@ dependencies = [
     "apscheduler>=3.10",
     "rich>=13.0",
     "apprise>=1.7",
+    "ruamel-yaml>=0.19.1",
 ]
 
 [dependency-groups]

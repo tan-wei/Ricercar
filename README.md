@@ -189,6 +189,21 @@ just tasks --json   # full data, machine-readable
 just tasks --prune # drop history of tasks no longer in the config
 ```
 
+Discover new uploaders and turn them into tasks:
+
+```sh
+just discovered          # show uploaders seen for the first time
+just add-discovered     # append them to config.local.yml as search tasks
+```sh
+just discovered          # show uploaders seen for the first time
+just add-discovered     # append them to config.local.yml as search tasks
+```
+
+The first time `just add-discovered` runs, it copies `config/config.yml` to
+`config/config.local.yml` (gitignored — see `.gitignore`), so local additions
+never pollute the repository.  Subsequent calls append only uploaders that are
+not already listed.
+
 Import a legacy database (see the `migrate` recipe or `src/ricercar/repository/migrate.py`):
 
 ```sh

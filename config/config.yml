@@ -26,6 +26,10 @@ run:
   # point is noticing a task that has found nothing for months. `ricercar tasks` reads
   # it, and a run warns about the tasks stale_task_days (60) and stale_task_runs (5)
   # agree are dead; both have to be met, so a fresh configuration is never nagged.
+  #
+  # discovered_uploaders_file defaults to data/discovered_uploaders.json: uploaders
+  # encountered for the first time during a run. `ricercar tasks --discovered` lists
+  # them; `ricercar tasks --add-discovered` turns them into config tasks.
 
 # When something fails, keep what the browser was looking at: the page, a screenshot,
 # a trace, and the explanation. One directory per failure.

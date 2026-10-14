@@ -96,6 +96,16 @@ typecheck:
 # Everything the `quality` CI job runs, in one command
 check: lint format-check typecheck
 
+# ── Discovered uploaders ──────────────────────────────────────────────────
+
+# Show uploaders discovered but not yet added as tasks
+discovered:
+    uv run ricercar tasks --discovered
+
+# Add every unconfirmed discovered uploader to config.local.yml as a task
+add-discovered:
+    uv run ricercar tasks --add-discovered
+
 # ── Commit messages ───────────────────────────────────────────────────────
 #
 # Conventional Commits, sentence-case subjects (commitlint.config.cjs). The same check

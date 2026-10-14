@@ -135,6 +135,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Drop the history of tasks that are no longer in the config",
     )
     tasks.add_argument("--json", action="store_true", help="Output as JSON")
+    tasks.add_argument(
+        "--discovered",
+        action="store_true",
+        help="Show uploaders discovered but not yet added as tasks",
+    )
+    tasks.add_argument(
+        "--add-discovered",
+        action="store_true",
+        help="Add every unconfirmed discovered uploader to config.local.yml as a task",
+    )
 
     return parser
 
@@ -173,6 +183,10 @@ def cli(argv: list[str] | None = None) -> None:
         raise SystemExit(_notify_test())
 
     if args.command == "tasks":
+        if args.discovered:
+            raise SystemExit(_show_discovered(settings))
+        if args.add_discovered:
+            raise SystemExit(_add_discovered(settings))
         raise SystemExit(_tasks_report(args))
 
     # A database from the previous era must not be written into by accident.
@@ -455,6 +469,134 @@ def _task_json(
 
 
 # ── Running ───────────────────────────────────────────────────────────────
+
+
+# ── Discovered uploaders ────────────────────────────────────────────────
+
+
+def _show_discovered(settings: Settings) -> int:
+    """``ricercar tasks --discovered``: print unconfirmed uploaders."""
+    from ricercar.discovery import DiscoveredUploaders
+    from ricercar.progress import CONSOLE
+
+    discovered = DiscoveredUploaders(Path(settings.run.discovered_uploaders_file))
+    uploaders = discovered.unconfirmed()
+
+    if not uploaders:
+        CONSOLE.print("[green]No unconfirmed uploaders — everything is up to date.[/]")
+        return 0
+
+    from rich.table import Table
+
+    table = Table(title="Discovered uploaders (not yet added as tasks)")
+    for column in ("author", "source", "first seen", "last seen", "sections", "hits"):
+        table.add_column(column)
+    for u in uploaders:
+        sections = ", ".join(str(s) for s in u.sections_seen) if u.sections_seen else "—"
+        table.add_row(
+            u.author,
+            u.source,
+            u.first_seen[:19],
+            u.last_seen[:19],
+            sections,
+            str(u.hits),
+        )
+    CONSOLE.print(table)
+    return 0
+
+
+def _add_discovered(settings: Settings) -> int:
+    """``ricercar tasks --add-discovered``: append unconfirmed uploaders as tasks."""
+    from pathlib import Path
+
+    from ruamel.yaml import YAML
+
+    from ricercar.discovery import DiscoveredUploaders
+    from ricercar.log import get_logger
+
+    log = get_logger()
+    discovered = DiscoveredUploaders(Path(settings.run.discovered_uploaders_file))
+    uploaders = discovered.unconfirmed()
+
+    if not uploaders:
+        log.info("No unconfirmed uploaders — nothing to add.")
+        return 0
+
+    # Load config.local.yml with ruamel.yaml for round-trip-safe editing.
+    # This file is gitignored (see .gitignore), so local overrides stay local.
+    config_path = Path("config/config.local.yml")
+    if not config_path.is_file():
+        # Bootstrap: create one from the default config.yml.
+        default = Path("config/config.yml")
+        if not default.is_file():
+            log.error("Neither config/config.local.yml nor config/config.yml exist — cannot add tasks.")
+            return 1
+        log.info("Creating config/config.local.yml from config/config.yml")
+        config_path.write_text(default.read_text(encoding="utf-8"), encoding="utf-8")
+
+    yaml = YAML()
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    with config_path.open(encoding="utf-8") as f:
+        data = yaml.load(f)
+
+    if data is None or "sources" not in data:
+        log.error("config.local.yml has no `sources:` section.")
+        return 1
+
+    added = 0
+    already_known = 0
+    skipped_no_source = 0
+
+    for uploader in uploaders:
+        source_name = uploader.source
+        if source_name not in data["sources"]:
+            log.warning(
+                "Source {!r} not found in config.local.yml — skipping uploader {!r}",
+                source_name,
+                uploader.author,
+            )
+            skipped_no_source += 1
+            continue
+
+        source_cfg = data["sources"][source_name]
+        tasks_list = source_cfg.get("tasks")
+        if tasks_list is None:
+            tasks_list = []
+            source_cfg["tasks"] = tasks_list
+
+        # Deduplicate against existing tasks.
+        new_task = {"author": uploader.author}
+        if any(_task_matches(t, uploader.author) for t in tasks_list):
+            already_known += 1
+            continue
+
+        tasks_list.append(new_task)
+        discovered.mark_confirmed(source_name, uploader.author)
+        added += 1
+
+    discovered.save()
+    config_path.write_text(
+        yaml.dumps(data) if hasattr(yaml, "dumps") else "",
+        encoding="utf-8",
+    )
+    # yaml.dump writes to a stream.
+    with config_path.open("w", encoding="utf-8") as f:
+        yaml.dump(data, f)
+
+    log.info(
+        "Added {} uploader(s) as tasks ({} were already known, {} skipped).",
+        added,
+        already_known,
+        skipped_no_source,
+    )
+    return 0
+
+
+def _task_matches(task: object, author: str) -> bool:
+    """Does *task* (a YAML dict) match *author* as an uploader-based search?"""
+    if not isinstance(task, dict):
+        return False
+    return task.get("author") == author
 
 
 def _runner_kwargs(args: argparse.Namespace, settings: Settings) -> dict[str, Any]:
