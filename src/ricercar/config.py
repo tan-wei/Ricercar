@@ -296,6 +296,8 @@ class RunConfig(BaseModel):
     """How many runs a task needs before its age is trusted enough to judge it."""
     discovered_uploaders_file: str = str(DATA_DIR / "discovered_uploaders.json")
     """Where newly discovered uploaders are recorded (see :mod:`ricercar.discovery`)."""
+    category_shifts_file: str = str(DATA_DIR / "category_shifts.json")
+    """Where category-shift events are recorded (see :mod:`ricercar.shifts`)."""
 
 
 class DiagnosticsConfig(BaseModel):

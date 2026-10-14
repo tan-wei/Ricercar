@@ -145,6 +145,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Add every unconfirmed discovered uploader to config.local.yml as a task",
     )
+    tasks.add_argument(
+        "--shifts",
+        action="store_true",
+        help="Show the history of uploaders appearing in previously unseen categories",
+    )
 
     return parser
 
@@ -187,6 +192,8 @@ def cli(argv: list[str] | None = None) -> None:
             raise SystemExit(_show_discovered(settings))
         if args.add_discovered:
             raise SystemExit(_add_discovered(settings))
+        if args.shifts:
+            raise SystemExit(_show_shifts(settings))
         raise SystemExit(_tasks_report(args))
 
     # A database from the previous era must not be written into by accident.
@@ -599,6 +606,69 @@ def _task_matches(task: object, author: str) -> bool:
     if not isinstance(task, dict):
         return False
     return task.get("author") == author
+
+
+# ── Category shifts ────────────────────────────────────────────────────────
+
+
+def _show_shifts(settings: Settings) -> int:
+    """``ricercar tasks --shifts``: print category shifts history."""
+    from ricercar.shifts import CategoryShiftTracker
+
+    tracker = CategoryShiftTracker(Path(settings.run.category_shifts_file))
+    shifts = tracker.all()
+
+    if not shifts:
+        from rich.console import Console
+
+        Console().print("[dim]No category shifts recorded yet.[/dim]")
+        return 0
+
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    # Resolve human-readable category names from the config.
+    rev_cats: dict[int, str] = {}
+    for src_name in settings.sources:
+        src_cfg = settings.sources[src_name]
+        if src_cfg:
+            rev_cats.update({v: k for k, v in src_cfg.categories.items()})
+
+    table = Table(title="Category shifts (uploaders appearing in new sections)")
+    table.add_column("Author")
+    table.add_column("Source")
+    table.add_column("From Section")
+    table.add_column("To Section")
+    table.add_column("First Seen")
+    table.add_column("Last Seen")
+    table.add_column("Hits")
+    table.add_column("Notified")
+
+    for shift in shifts:
+        _from = (
+            f"{shift.expected_category} ({rev_cats.get(shift.expected_category or 0, '')})"
+            if shift.expected_category is not None
+            else "—"
+        )
+        _to = f"{shift.new_category} ({rev_cats.get(shift.new_category, '')})"
+        notified = "✓" if shift.notified else "—"
+        table.add_row(
+            shift.author,
+            shift.source,
+            _from,
+            _to,
+            shift.first_seen[:19],
+            shift.last_seen[:19],
+            str(shift.hits),
+            notified,
+        )
+
+    console.print(table)
+    console.print(
+        "\n[dim]Use `just discovered` or `just add-discovered` to manage new uploaders.[/dim]"
+    )
+    return 0
 
 
 def _runner_kwargs(args: argparse.Namespace, settings: Settings) -> dict[str, Any]:

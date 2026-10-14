@@ -96,7 +96,7 @@ typecheck:
 # Everything the `quality` CI job runs, in one command
 check: lint format-check typecheck
 
-# ── Discovered uploaders ──────────────────────────────────────────────────
+# ── Discovered uploaders & category shifts ──────────────────────────────
 
 # Show uploaders discovered but not yet added as tasks
 discovered:
@@ -105,6 +105,10 @@ discovered:
 # Add every unconfirmed discovered uploader to config.local.yml as a task
 add-discovered:
     uv run ricercar tasks --add-discovered
+
+# Show uploaders that have appeared in previously unseen categories
+shifts:
+    uv run ricercar tasks --shifts
 
 # ── Commit messages ───────────────────────────────────────────────────────
 #

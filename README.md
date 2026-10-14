@@ -189,6 +189,24 @@ just tasks --json   # full data, machine-readable
 just tasks --prune # drop history of tasks no longer in the config
 ```
 
+Profile the run with Python's built-in profiler:
+
+```sh
+just profile
+# or
+uv run python -m cProfile -o data/profile.cachegrind -m ricercar
+```
+
+Category shifts — uploaders appearing in sections they haven't been seen in:
+
+```sh
+just shifts                       # show shift history as a table
+uv run ricercar tasks --shifts    # same, with the full CLI
+```
+
+Shifts are recorded automatically during a run and highlighted at the top of
+the run-finished notification.  Each shift is reported at most once.
+
 Discover new uploaders and turn them into tasks:
 
 ```sh

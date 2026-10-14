@@ -206,6 +206,7 @@ class SourceOutcome:
     stored: int = 0
     """New rows written."""
     new_authors: int = 0
+    new_shifts: int = 0
     failures: int = 0
     stale: int = 0
     """Tasks that have found nothing for long enough to be worth removing."""
@@ -219,10 +220,11 @@ class SourceOutcome:
         if self.skipped:
             return f"{self.source}: skipped — {self.skipped}"
         dead = f", {self.stale} task(s) look dead" if self.stale else ""
+        shifts = f", {self.new_shifts} new category shift(s)" if self.new_shifts else ""
         return (
             f"{self.source}: {self.done}/{self.tasks} task(s), {self.stored} stored "
             f"({self.downloaded} downloaded, {self.known} already known, {self.hits} seen), "
-            f"{self.new_authors} new uploader(s), {self.failures} failure(s){dead}, "
+            f"{self.new_authors} new uploader(s){shifts}, {self.failures} failure(s){dead}, "
             f"{self.elapsed:.0f}s"
         )
 
@@ -298,6 +300,10 @@ class Runner:
 
         self.discovered = DiscoveredUploaders(Path(self.cfg.run.discovered_uploaders_file))
 
+        from ricercar.shifts import CategoryShiftTracker
+
+        self.shifts = CategoryShiftTracker(Path(self.cfg.run.category_shifts_file))
+
     # ── Entry point ─────────────────────────────────────────────────────
 
     async def run(self) -> RunOutcome:
@@ -322,6 +328,7 @@ class Runner:
                     self.state.save()
                     self.history.save()
                     self.discovered.save()
+                    self.shifts.save()
         finally:
             self.shutdown.restore()
 
@@ -400,12 +407,15 @@ class Runner:
                         continue
                     if (stat := _yields.get(plan.origin)) is not None:
                         _task_history[plan.label] = stat
+            # Collect category shifts that need to be notified.
+            _shifts = self.shifts.unread(source.name)
             await self.notifier.run_finished(
                 source.name,
                 tasks=len(tasks),
                 downloaded=outcome.downloaded,
                 stored=outcome.stored,
                 new_authors=outcome.new_authors,
+                category_shifts=_shifts,
                 elapsed=outcome.elapsed,
                 interrupted=self.shutdown.requested,
                 stale=[stat.description or stat.key for stat in stale],
@@ -413,6 +423,11 @@ class Runner:
                 task_results=task_results,
                 task_history=_task_history or None,
             )
+            # Mark shifts as notified after successful delivery.
+            # (We mark them unconditionally — the tracker is local and the file is
+            # safe; in future this could check the notifier's return value.)
+            if _shifts:
+                self.shifts.mark_all_notified(source.name)
         return outcome
 
     async def _drive(
@@ -686,6 +701,13 @@ class Runner:
                             author,
                             section=cat if isinstance(cat, int) else None,
                         )
+                    # Detect category shifts for *every* hit's author, not just new ones.
+                    for hit in hits:
+                        cat = task.category
+                        if hit.author and isinstance(cat, int):
+                            shift = self.shifts.observe(source.name, hit.author, cat)
+                            if shift is not None:
+                                outcome.new_shifts += 1
                     for hit in hits:
                         outcome.hits += 1
                         if self.shutdown.requested:
