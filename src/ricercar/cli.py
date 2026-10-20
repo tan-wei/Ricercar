@@ -654,8 +654,7 @@ def _handle_categories(args: argparse.Namespace) -> int:
         write_snapshot(live)
         log.info("Updated data/categories.json with {} sections.", len(live))
         CONSOLE.print(
-            f"[green]Snapshot updated: {len(live)} sections written to "
-            "data/categories.json[/]"
+            f"[green]Snapshot updated: {len(live)} sections written to data/categories.json[/]"
         )
         CONSOLE.print(
             "[yellow]If you need to adjust config.yml, do so manually — "
@@ -692,9 +691,7 @@ def _handle_categories(args: argparse.Namespace) -> int:
     diff = diff_categories(live, snapshot=snapshot)
 
     if not diff.has_changes:
-        CONSOLE.print(
-            f"[green]✓ No changes — {len(live)} sections match the snapshot.[/]"
-        )
+        CONSOLE.print(f"[green]✓ No changes — {len(live)} sections match the snapshot.[/]")
         return 0
 
     from rich.table import Table
@@ -714,8 +711,7 @@ def _handle_categories(args: argparse.Namespace) -> int:
             table.add_row("[yellow]Renamed[/]", str(fid), f"'{old}' → '{new}'")
     CONSOLE.print(table)
     CONSOLE.print(
-        "\n[yellow]Run `ricercar categories refresh` to update the snapshot "
-        "after reviewing.[/]"
+        "\n[yellow]Run `ricercar categories refresh` to update the snapshot after reviewing.[/]"
     )
     return 1
 

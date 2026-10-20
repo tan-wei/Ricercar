@@ -107,11 +107,7 @@ def diff_categories(
 
     added = {k: v for k, v in live.items() if k not in base}
     removed = {k: v for k, v in base.items() if k not in live}
-    changed = {
-        k: (base[k], live[k])
-        for k in base
-        if k in live and base[k] != live[k]
-    }
+    changed = {k: (base[k], live[k]) for k in base if k in live and base[k] != live[k]}
 
     return CategoryDiff(added=added, removed=removed, changed=changed)
 
