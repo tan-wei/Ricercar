@@ -10,7 +10,7 @@ build/
 venv/
 
 # Runtime data
-data/
+/data/
 /Torrents/
 log/
 
