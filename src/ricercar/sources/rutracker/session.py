@@ -24,7 +24,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page
 
 from ricercar.browser import MANUAL_LOGIN_TIMEOUT, wait_for_manual_login
-from ricercar.browser.navigation import goto
+from ricercar.browser.navigation import CF_WAIT_TIMEOUT, goto, wait_for_cloudflare
 from ricercar.log import get_logger
 from ricercar.sources.base import SessionExpiredError
 from ricercar.sources.rutracker.diagnose import CHALLENGE_MARKERS
@@ -171,6 +171,16 @@ async def ensure_logged_in(
     log = get_logger()
 
     await goto(page, selectors.base_url)
+
+    # Cloudflare 快速检查（1–5 s），有 cf_clearance 的浏览器通常会自动通过。
+    # 等待它完成后再判断页面状态。
+    if not await wait_for_cloudflare(page):
+        log.warning(
+            "Cloudflare challenge did not clear after {}ms — the browser may need "
+            "manual interaction to complete it",
+            CF_WAIT_TIMEOUT,
+        )
+
     if await is_logged_in(page, username, selectors):
         log.info("Reusing the browser's signed-in session for '{}'", username)
         return

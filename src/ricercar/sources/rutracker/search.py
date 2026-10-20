@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 from playwright.async_api import Page
 
-from ricercar.browser.navigation import NAVIGATION_TIMEOUT, goto
+from ricercar.browser.navigation import NAVIGATION_TIMEOUT, goto, wait_for_cloudflare
 from ricercar.log import get_logger
 from ricercar.models import SearchHit, SearchPage
 from ricercar.sources.base import SelectorsBrokenError, SiteUnderMaintenanceError
@@ -165,6 +165,7 @@ async def start_search(
     url = selectors.search_url(text, category)
     get_logger().info("Searching: {}", url)
     await goto(page, url)
+    await wait_for_cloudflare(page)
     _raise_if_unusable(await page.content(), selectors)
     await wait_for_results(page, selectors)
 
