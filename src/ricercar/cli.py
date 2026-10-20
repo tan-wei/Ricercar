@@ -622,71 +622,67 @@ def _task_matches(task: object, author: str) -> bool:
 
 def _handle_categories(args: argparse.Namespace) -> int:
     """``ricercar categories [check|refresh]``."""
+    import asyncio  # noqa: PLC0415
+
+    from ricercar.browser import managed_browser
     from ricercar.categories import diff_categories, load_snapshot, write_snapshot
     from ricercar.log import get_logger
     from ricercar.progress import CONSOLE
+    from ricercar.sources import get_source
+    from ricercar.sources.rutracker.categories import fetch_categories  # noqa: PLC0415
 
     log = get_logger()
-    live: dict[int, str] = {}
+
+    # Find the first rutracker source in the config.
+    settings = get_settings()
+    source_obj = None
+    for name in settings.sources:
+        try:
+            obj = get_source(name, settings)
+            if "rutracker" in type(obj).__module__:
+                source_obj = obj
+                break
+        except Exception:
+            continue
+    if source_obj is None:
+        log.error(
+            "No rutracker source found in the config — add a ``sources:`` section "
+            "pointing to a rutracker source in config.yml, then retry."
+        )
+        return 1
+
+    async def _fetch() -> dict[int, str]:
+        async with managed_browser(source_obj) as session:
+            page = await session.context.new_page()
+            await source_obj.ensure_logged_in(page)
+            return await fetch_categories(page)
+
+    try:
+        live = asyncio.run(_fetch())
+    except Exception:
+        log.warning(
+            "Could not fetch live categories (connection problem or session "
+            "expired) — using diff against an empty baseline"
+        )
+        live = {}
 
     if args.action == "refresh":
-        # Fetch from live site and overwrite the snapshot.
-        import asyncio  # noqa: PLC0415
-
-        from playwright.async_api import async_playwright  # noqa: PLC0415
-
-        from ricercar.sources.rutracker.categories import fetch_categories  # noqa: PLC0415
-
-        async def _refresh() -> dict[int, str]:
-            async with async_playwright() as pw:
-                browser = await pw.chromium.launch(headless=True)
-                page = await browser.new_page()
-                await page.goto(
-                    "https://rutracker.org/forum/tracker.php",
-                    wait_until="domcontentloaded",
-                )
-                cats = await fetch_categories(page)
-                await browser.close()
-                return cats
-
-        log.info("Fetching current category list from rutracker…")
-        live = asyncio.run(_refresh())
         write_snapshot(live)
-        log.info("Updated data/categories.json with {} sections.", len(live))
-        CONSOLE.print(
-            f"[green]Snapshot updated: {len(live)} sections written to data/categories.json[/]"
-        )
-        CONSOLE.print(
-            "[yellow]If you need to adjust config.yml, do so manually — "
-            "translation and filtering cannot be automated.[/]"
-        )
+        if live:
+            log.info("Updated data/categories.json with {} sections.", len(live))
+            CONSOLE.print(
+                f"[green]Snapshot updated: {len(live)} sections written to data/categories.json[/]"
+            )
+            CONSOLE.print(
+                "[yellow]If you need to adjust config.yml, do so manually — "
+                "translation and filtering cannot be automated.[/]"
+            )
+        else:
+            CONSOLE.print("[red]No categories fetched — snapshot was not updated.[/]")
+            return 1
         return 0
 
     # Default: check.
-    from ricercar.sources.rutracker.categories import fetch_categories  # noqa: PLC0415
-
-    try:
-        import asyncio  # noqa: PLC0415
-
-        from playwright.async_api import async_playwright  # noqa: PLC0415
-
-        async def _check() -> dict[int, str]:
-            async with async_playwright() as pw:
-                browser = await pw.chromium.launch(headless=True)
-                page = await browser.new_page()
-                await page.goto(
-                    "https://rutracker.org/forum/tracker.php",
-                    wait_until="domcontentloaded",
-                )
-                cats = await fetch_categories(page)
-                await browser.close()
-                return cats
-
-        live = asyncio.run(_check())
-    except Exception:
-        log.warning("Could not fetch live categories — using diff against an empty baseline")
-        live = {}
-
     snapshot = load_snapshot()
     diff = diff_categories(live, snapshot=snapshot)
 

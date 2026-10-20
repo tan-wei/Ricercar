@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from playwright.async_api import Page
 
+from ricercar.browser.navigation import goto, wait_for_cloudflare
 from ricercar.sources.rutracker.selectors import DEFAULT_SELECTORS, Selectors
 
 
@@ -24,7 +25,11 @@ async def fetch_categories(
     including sub-forums (indented with ``|-`` in the name).
     """
     url = selectors.search_url("", None)
-    await page.goto(url, wait_until="domcontentloaded")
+    await goto(page, url)
+
+    # Cloudflare 检查 — 复用已有 cf_clearance 的浏览器通常很快通过，
+    # 但如果 clearance 过期了需要等手动处理。
+    await wait_for_cloudflare(page)
 
     # Wait for the category dropdown to be present.
     await page.wait_for_selector(selectors.category_list, timeout=15_000)
