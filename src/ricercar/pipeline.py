@@ -210,7 +210,8 @@ class SourceOutcome:
     """Torrents actually fetched."""
     stored: int = 0
     """New rows written."""
-    new_authors: int = 0
+    new_authors: list[str] = field(default_factory=list)
+    """Uploader handles seen for the first time this run."""
     category_diff: CategoryDiff | None = None
     """Set when the live category list diverges from the bundled snapshot."""
     failures: int = 0
@@ -227,10 +228,11 @@ class SourceOutcome:
             return f"{self.source}: skipped — {self.skipped}"
         dead = f", {self.stale} task(s) look dead" if self.stale else ""
         cats = ", categories changed" if self.category_diff else ""
+        na = f", {len(self.new_authors)} new uploader(s)" if self.new_authors else ""
         return (
             f"{self.source}: {self.done}/{self.tasks} task(s), {self.stored} stored "
             f"({self.downloaded} downloaded, {self.known} already known, {self.hits} seen), "
-            f"{self.new_authors} new uploader(s){cats}, {self.failures} failure(s){dead}, "
+            f"{na}{cats}, {self.failures} failure(s){dead}, "
             f"{self.elapsed:.0f}s"
         )
 
@@ -432,21 +434,20 @@ class Runner:
         finally:
             outcome.stale = len(stale)
             outcome.elapsed = time.monotonic() - started
-            # Build per-task history stats from the cache for any task that had results.
+            # Build per-task history stats from the cache for all tasks (used by
+            # notify to report last-hit times for tasks that found nothing).
             _task_history: dict[str, TaskYield] = {}
-            if task_results:
-                _yields = self.history.yields(source.name)
-                for plan in tasks:
-                    if plan.label not in task_results:
-                        continue
-                    if (stat := _yields.get(plan.origin)) is not None:
-                        _task_history[plan.label] = stat
+            _yields = self.history.yields(source.name)
+            for plan in tasks:
+                if (stat := _yields.get(plan.origin)) is not None:
+                    _task_history[plan.label] = stat
             await self.notifier.run_finished(
                 source.name,
                 tasks=len(tasks),
                 downloaded=outcome.downloaded,
                 stored=outcome.stored,
                 new_authors=outcome.new_authors,
+                budget=budget,
                 category_diff=outcome.category_diff,
                 elapsed=outcome.elapsed,
                 interrupted=self.shutdown.requested,
@@ -720,7 +721,7 @@ class Runner:
                     new_authors = self.state.remember_authors(
                         source.name, [hit.author for hit in hits]
                     )
-                    outcome.new_authors += len(new_authors)
+                    outcome.new_authors.extend(new_authors)
                     for author in new_authors:
                         cat = task.category
                         self.discovered.record(

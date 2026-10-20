@@ -684,7 +684,7 @@ def test_an_offline_run_downloads_stores_and_remembers(
     assert source_outcome.hits == 2
     assert source_outcome.downloaded == 1
     assert source_outcome.failures == 0
-    assert source_outcome.new_authors > 0
+    assert len(source_outcome.new_authors) > 0
 
     with TorrentRepository(run_config.db_path) as repo:
         assert repo.count() == 1

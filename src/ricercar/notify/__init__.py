@@ -182,7 +182,8 @@ class Notifier:
         tasks: int,
         downloaded: int,
         stored: int,
-        new_authors: int = 0,
+        new_authors: Sequence[str] = (),
+        budget: int = 0,
         category_diff: CategoryDiff | None = None,
         elapsed: float = 0.0,
         interrupted: bool = False,
@@ -203,9 +204,9 @@ class Notifier:
         ``.torrent`` file, **not** the topic title.  The first few are listed per task
         and a summary of how many tasks did / did not find anything is shown.
 
-        *task_history* maps a task label to its long-term :class:`TaskYield` stats
-        (runs, total stored, days since last hit).  When provided alongside
-        *task_results*, a one-line summary is appended to each task section.
+        *task_history* maps a task label to its long-term :class:`TaskYield` stats.
+        Only tasks that **did not** download anything this run are shown here, along
+        with their time since last hit — so you can spot tasks that have gone quiet.
 
         *category_diff* describes how the live site's forum-section list diverges from
         the bundled snapshot.  When present the pipeline skipped the search and reports
@@ -214,10 +215,9 @@ class Notifier:
         the config.
         """
         head = "Interrupted after" if interrupted else "Downloaded"
-        authors = f", {new_authors} new uploader(s)" if new_authors else ""
         lines: list[str] = []
 
-        # ── Category changes banner (top of message, highlighted) ───────
+        # ── 1. Category changes banner (top of message, highlighted) ────
         if category_diff and category_diff.has_changes:
             lines.append("## ⚠️ Forum Section Structure Changed\n")
             lines.append(
@@ -240,13 +240,31 @@ class Notifier:
             )
             lines.append("---\n")
 
+        # ── 2. New uploaders banner ─────────────────────────────────────
+        if new_authors:
+            shown = list(new_authors[:20])
+            rest = len(new_authors) - 20
+            more = f" … and {rest} more" if rest > 0 else ""
+            lines.append("## 👤 New Uploaders\n")
+            for author in shown:
+                lines.append(f"- ``{author}``")
+            lines.append("")
+            lines.append(
+                "Run ``ricercar tasks --add-discovered`` to turn them into tasks, "
+                "or ``ricercar tasks --discovered`` to see the full list.\n"
+            )
+            lines.append("---\n")
+
+        # ── 3. Source summary ───────────────────────────────────────────
         lines.append(f"## {source}")
         lines.append("")
+        quota = f" / {budget}" if budget else ""
         lines.append(
-            f"{head} {stored} new torrent(s) ({downloaded} downloaded) during {tasks} task(s), "
-            f"in {elapsed:.0f}s{authors}."
+            f"**{head} {stored} torrent(s){quota} ({downloaded} downloaded) "
+            f"during {tasks} task(s), in {elapsed:.0f}s.**"
         )
 
+        # ── 4. Per-task download list ───────────────────────────────────
         if task_results:
             _tasks_with = 0
             _tasks_without = 0
@@ -259,17 +277,7 @@ class Notifier:
                 shown = names[:LISTED_TORRENTS]
                 rest = len(names) - LISTED_TORRENTS
                 more = f"\n*… and {rest} more*" if rest > 0 else ""
-                # One-line history summary when available.
-                _history = ""
-                if task_history and label in task_history:
-                    ys = task_history[label]
-                    _history = f"*[{ys.runs} run(s), {ys.stored} total stored"
-                    if ys.last_hit:
-                        _history += f", {ys.days_without_hit() or 0}d since last hit"
-                    _history += "*](_)\n"
                 task_sections.append(f"\n### {label} ({len(names)} torrent(s))\n")
-                if _history:
-                    task_sections.append(_history)
                 task_sections.append("\n".join(f"- {n}" for n in shown) + more + "\n")
             summary_parts = []
             if _tasks_with:
@@ -280,7 +288,24 @@ class Notifier:
                 lines.append("")
                 lines.append("**" + ", ".join(summary_parts) + ".**")
             lines.extend(task_sections)
+            lines.append("")
 
+        # ── 5. Tasks with no download this run (show last_hit age) ──────
+        if task_history and task_results:
+            quiet: list[tuple[str, TaskYield]] = []
+            for label, ys in sorted(task_history.items()):
+                if label not in task_results or not task_results[label]:
+                    quiet.append((label, ys))
+            if quiet:
+                lines.append("### ⏳ Tasks With No Download This Run\n")
+                lines.append("| Task | Last Hit |")
+                lines.append("|------|----------|")
+                for label, ys in quiet:
+                    last = f"{ys.days_without_hit() or 0}d ago" if ys.last_hit else "never"
+                    lines.append(f"| {label} | {last} |")
+                lines.append("")
+
+        # ── 6. Stale tasks ──────────────────────────────────────────────
         if stale:
             stale_shown = ", ".join(stale[:LISTED_DEAD])
             stale_rest = len(stale) - LISTED_DEAD
