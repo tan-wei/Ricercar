@@ -145,10 +145,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Add every unconfirmed discovered uploader to config.local.yml as a task",
     )
-    tasks.add_argument(
-        "--shifts",
-        action="store_true",
-        help="Show the history of uploaders appearing in previously unseen categories",
+    # ── `categories` ────────────────────────────────────────────────────
+    cat = sub.add_parser(
+        "categories",
+        help="Check or refresh the bundled forum-section snapshot",
+    )
+    cat.add_argument(
+        "action",
+        nargs="?",
+        default="check",
+        choices=["check", "refresh"],
+        help="``check`` compares live sections with the snapshot; "
+        "``refresh`` overwrites the snapshot (default: check)",
     )
 
     return parser
@@ -192,9 +200,10 @@ def cli(argv: list[str] | None = None) -> None:
             raise SystemExit(_show_discovered(settings))
         if args.add_discovered:
             raise SystemExit(_add_discovered(settings))
-        if args.shifts:
-            raise SystemExit(_show_shifts(settings))
         raise SystemExit(_tasks_report(args))
+
+    if args.command == "categories":
+        raise SystemExit(_handle_categories(args))
 
     # A database from the previous era must not be written into by accident.
     _require_usable_database(settings)
@@ -608,67 +617,107 @@ def _task_matches(task: object, author: str) -> bool:
     return task.get("author") == author
 
 
-# ── Category shifts ────────────────────────────────────────────────────────
+# ── Categories (forum-section snapshot) ─────────────────────────────────
 
 
-def _show_shifts(settings: Settings) -> int:
-    """``ricercar tasks --shifts``: print category shifts history."""
-    from ricercar.shifts import CategoryShiftTracker
+def _handle_categories(args: argparse.Namespace) -> int:
+    """``ricercar categories [check|refresh]``."""
+    from ricercar.categories import diff_categories, load_snapshot, write_snapshot
+    from ricercar.log import get_logger
+    from ricercar.progress import CONSOLE
 
-    tracker = CategoryShiftTracker(Path(settings.run.category_shifts_file))
-    shifts = tracker.all()
+    log = get_logger()
+    live: dict[int, str] = {}
 
-    if not shifts:
-        from rich.console import Console
+    if args.action == "refresh":
+        # Fetch from live site and overwrite the snapshot.
+        import asyncio  # noqa: PLC0415
 
-        Console().print("[dim]No category shifts recorded yet.[/dim]")
+        from playwright.async_api import async_playwright  # noqa: PLC0415
+
+        from ricercar.sources.rutracker.categories import fetch_categories  # noqa: PLC0415
+
+        async def _refresh() -> dict[int, str]:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.goto(
+                    "https://rutracker.org/forum/tracker.php",
+                    wait_until="domcontentloaded",
+                )
+                cats = await fetch_categories(page)
+                await browser.close()
+                return cats
+
+        log.info("Fetching current category list from rutracker…")
+        live = asyncio.run(_refresh())
+        write_snapshot(live)
+        log.info("Updated data/categories.json with {} sections.", len(live))
+        CONSOLE.print(
+            f"[green]Snapshot updated: {len(live)} sections written to "
+            "data/categories.json[/]"
+        )
+        CONSOLE.print(
+            "[yellow]If you need to adjust config.yml, do so manually — "
+            "translation and filtering cannot be automated.[/]"
+        )
         return 0
 
-    from rich.console import Console
+    # Default: check.
+    from ricercar.sources.rutracker.categories import fetch_categories  # noqa: PLC0415
+
+    try:
+        import asyncio  # noqa: PLC0415
+
+        from playwright.async_api import async_playwright  # noqa: PLC0415
+
+        async def _check() -> dict[int, str]:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.goto(
+                    "https://rutracker.org/forum/tracker.php",
+                    wait_until="domcontentloaded",
+                )
+                cats = await fetch_categories(page)
+                await browser.close()
+                return cats
+
+        live = asyncio.run(_check())
+    except Exception:
+        log.warning("Could not fetch live categories — using diff against an empty baseline")
+        live = {}
+
+    snapshot = load_snapshot()
+    diff = diff_categories(live, snapshot=snapshot)
+
+    if not diff.has_changes:
+        CONSOLE.print(
+            f"[green]✓ No changes — {len(live)} sections match the snapshot.[/]"
+        )
+        return 0
+
     from rich.table import Table
 
-    console = Console()
-    # Resolve human-readable category names from the config.
-    rev_cats: dict[int, str] = {}
-    for src_name in settings.sources:
-        src_cfg = settings.sources[src_name]
-        if src_cfg:
-            rev_cats.update({v: k for k, v in src_cfg.categories.items()})
-
-    table = Table(title="Category shifts (uploaders appearing in new sections)")
-    table.add_column("Author")
-    table.add_column("Source")
-    table.add_column("From Section")
-    table.add_column("To Section")
-    table.add_column("First Seen")
-    table.add_column("Last Seen")
-    table.add_column("Hits")
-    table.add_column("Notified")
-
-    for shift in shifts:
-        _from = (
-            f"{shift.expected_category} ({rev_cats.get(shift.expected_category or 0, '')})"
-            if shift.expected_category is not None
-            else "—"
-        )
-        _to = f"{shift.new_category} ({rev_cats.get(shift.new_category, '')})"
-        notified = "✓" if shift.notified else "—"
-        table.add_row(
-            shift.author,
-            shift.source,
-            _from,
-            _to,
-            shift.first_seen[:19],
-            shift.last_seen[:19],
-            str(shift.hits),
-            notified,
-        )
-
-    console.print(table)
-    console.print(
-        "\n[dim]Use `just discovered` or `just add-discovered` to manage new uploaders.[/dim]"
+    table = Table(title="Category changes detected")
+    table.add_column("Type")
+    table.add_column("ID")
+    table.add_column("Name")
+    if diff.added:
+        for fid, name in sorted(diff.added.items()):
+            table.add_row("[green]Added[/]", str(fid), name)
+    if diff.removed:
+        for fid, name in sorted(diff.removed.items()):
+            table.add_row("[red]Removed[/]", str(fid), name)
+    if diff.changed:
+        for fid, (old, new) in sorted(diff.changed.items()):
+            table.add_row("[yellow]Renamed[/]", str(fid), f"'{old}' → '{new}'")
+    CONSOLE.print(table)
+    CONSOLE.print(
+        "\n[yellow]Run `ricercar categories refresh` to update the snapshot "
+        "after reviewing.[/]"
     )
-    return 0
+    return 1
 
 
 def _runner_kwargs(args: argparse.Namespace, settings: Settings) -> dict[str, Any]:

@@ -19,10 +19,10 @@ from datetime import datetime
 
 import apprise
 
+from ricercar.categories import CategoryDiff
 from ricercar.config import NotifyConfig, SearchTask, get_settings
 from ricercar.history import TaskYield
 from ricercar.log import get_logger
-from ricercar.shifts import CategoryShift
 
 
 def _stamp(when: datetime | None) -> str:
@@ -183,7 +183,7 @@ class Notifier:
         downloaded: int,
         stored: int,
         new_authors: int = 0,
-        category_shifts: list[CategoryShift] | None = None,
+        category_diff: CategoryDiff | None = None,
         elapsed: float = 0.0,
         interrupted: bool = False,
         stale: Sequence[str] = (),
@@ -207,40 +207,37 @@ class Notifier:
         (runs, total stored, days since last hit).  When provided alongside
         *task_results*, a one-line summary is appended to each task section.
 
-        *category_shifts* are uploaders that appeared in a category they had not been
-        seen in before.  These are rendered at the very top of the message (before the
-        source summary), highlighted with a warning banner.  Each shift is reported at
-        **most once** — after this notification they are marked as notified and will
-        not appear again.  The full history is available via ``ricercar tasks --shifts``.
+        *category_diff* describes how the live site's forum-section list diverges from
+        the bundled snapshot.  When present the pipeline skipped the search and reports
+        the difference here.  Run ``ricercar categories check`` for a full table, or
+        ``ricercar categories refresh`` to update the snapshot after manually adjusting
+        the config.
         """
         head = "Interrupted after" if interrupted else "Downloaded"
         authors = f", {new_authors} new uploader(s)" if new_authors else ""
         lines: list[str] = []
 
-        # ── Category shifts banner (top of message, highlighted) ───────
-        if category_shifts:
-            # Determine which categories have human-readable names.
-            cfg = get_settings().sources.get(source)
-            cat_names = cfg.categories if cfg else {}
-            rev_cat: dict[int, str] = {v: k for k, v in cat_names.items()} if cat_names else {}
-
-            lines.append("## ⚠️ Category Changes Detected\n")
+        # ── Category changes banner (top of message, highlighted) ───────
+        if category_diff and category_diff.has_changes:
+            lines.append("## ⚠️ Forum Section Structure Changed\n")
             lines.append(
-                "The following uploaders appeared in previously unseen categories. "
-                "These are likely one-time events and **will not be reported again** — "
-                "review your task configuration if you want to include them.\n"
+                "The live site's category list differs from the bundled snapshot. "
+                "The pipeline skipped the search so you can review the changes before "
+                "continuing.\n"
             )
-            lines.append("| Author | From Section | To Section |")
-            lines.append("|--------|-------------|-----------|")
-            for shift in category_shifts:
-                _from = (
-                    f"{shift.expected_category} ({rev_cat.get(shift.expected_category, '')})"
-                    if shift.expected_category is not None
-                    else "—"
-                )
-                _to = f"{shift.new_category} ({rev_cat.get(shift.new_category, '')})"
-                lines.append(f"| {shift.author} | {_from} | {_to} |")
+            lines.append("| Change | ID | Name |")
+            lines.append("|--------|----|------|")
+            for fid, name in sorted(category_diff.added.items()):
+                lines.append(f"| Added | {fid} | {name} |")
+            for fid, name in sorted(category_diff.removed.items()):
+                lines.append(f"| Removed | {fid} | {name} |")
+            for fid, (old, new) in sorted(category_diff.changed.items()):
+                lines.append(f"| Renamed | {fid} | '{old}' → '{new}' |")
             lines.append("")
+            lines.append(
+                "Run ``ricercar categories check`` for details, or "
+                "``ricercar categories refresh`` to update the snapshot after reviewing.\n"
+            )
             lines.append("---\n")
 
         lines.append(f"## {source}")

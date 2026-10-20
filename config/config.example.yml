@@ -26,7 +26,6 @@ run:
   state_file: data/state.json # known uploaders, finished tasks, last run
   task_history_file: data/task_history.json # each task's yield over time
   discovered_uploaders_file: data/discovered_uploaders.json # new uploaders found during runs
-  category_shifts_file: data/category_shifts.json # uploaders appearing in new categories
   stale_task_days: 60 # a task that found nothing for this long is reported
   stale_task_runs: 5 # …but only after it has run this many times
 

@@ -96,7 +96,7 @@ typecheck:
 # Everything the `quality` CI job runs, in one command
 check: lint format-check typecheck
 
-# ── Discovered uploaders & category shifts ──────────────────────────────
+# ── Discovered uploaders & category checks ────────────────────────────
 
 # Show uploaders discovered but not yet added as tasks
 discovered:
@@ -106,9 +106,13 @@ discovered:
 add-discovered:
     uv run ricercar tasks --add-discovered
 
-# Show uploaders that have appeared in previously unseen categories
-shifts:
-    uv run ricercar tasks --shifts
+# Compare live section list with the bundled snapshot
+categories action check:
+    uv run ricercar categories {{action}}
+
+# Overwrite the bundled snapshot with the live section list
+refresh-categories:
+    uv run ricercar categories refresh
 
 # ── Commit messages ───────────────────────────────────────────────────────
 #

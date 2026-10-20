@@ -197,15 +197,19 @@ just profile
 uv run python -m cProfile -o data/profile.cachegrind -m ricercar
 ```
 
-Category shifts — uploaders appearing in sections they haven't been seen in:
+Category structure — detect when the site's forum sections have changed:
 
 ```sh
-just shifts                       # show shift history as a table
-uv run ricercar tasks --shifts    # same, with the full CLI
+just categories                     # compare live site with snapshot
+just categories check               # same
+just categories refresh             # overwrite snapshot with live data
 ```
 
-Shifts are recorded automatically during a run and highlighted at the top of
-the run-finished notification.  Each shift is reported at most once.
+Categories are fetched from rutracker's ``#fs-main`` dropdown during each run
+and compared against a bundled snapshot.  When something has changed (a section
+was renamed, added, or removed), the pipeline skips the search and reports the
+difference in the run-finished notification.  Run ``ricercar categories refresh``
+to update the snapshot after manually adjusting the config.
 
 Discover new uploaders and turn them into tasks:
 

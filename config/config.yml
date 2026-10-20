@@ -30,11 +30,6 @@ run:
   # discovered_uploaders_file defaults to data/discovered_uploaders.json: uploaders
   # encountered for the first time during a run. `ricercar tasks --discovered` lists
   # them; `ricercar tasks --add-discovered` turns them into config tasks.
-  #
-  # category_shifts_file defaults to data/category_shifts.json: uploaders appearing
-  # in categories they have not been seen in before.  These are highlighted in the
-  # run-finished notification (at most once per shift).  `ricercar tasks --shifts`
-  # lists the full history.
 
 # When something fails, keep what the browser was looking at: the page, a screenshot,
 # a trace, and the explanation. One directory per failure.

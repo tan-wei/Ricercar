@@ -13,6 +13,10 @@ stop at the daily quota — with three things done properly:
 * an interrupt (Ctrl-C, SIGTERM) finishes the torrent in hand, records the state,
   says so in the notification, and stops — the next run resumes where this one
   stopped (see :mod:`ricercar.state`).
+
+When resuming, only the tasks left unfinished from the previous run are picked —
+random sampling is skipped until all pending work is cleared.  This prevents the
+task set from growing monotonically across successive interrupted runs.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from rich.progress import Progress, TaskID
 
 from ricercar.browser import BrowserSession, managed_browser
+from ricercar.categories import CategoryDiff, check_categories
 from ricercar.config import SearchTask, Settings, get_settings
 from ricercar.diagnostics import Recorder
 from ricercar.history import TaskHistory, TaskYield, configured_task_keys
@@ -206,7 +211,8 @@ class SourceOutcome:
     stored: int = 0
     """New rows written."""
     new_authors: int = 0
-    new_shifts: int = 0
+    category_diff: CategoryDiff | None = None
+    """Set when the live category list diverges from the bundled snapshot."""
     failures: int = 0
     stale: int = 0
     """Tasks that have found nothing for long enough to be worth removing."""
@@ -220,11 +226,11 @@ class SourceOutcome:
         if self.skipped:
             return f"{self.source}: skipped — {self.skipped}"
         dead = f", {self.stale} task(s) look dead" if self.stale else ""
-        shifts = f", {self.new_shifts} new category shift(s)" if self.new_shifts else ""
+        cats = ", categories changed" if self.category_diff else ""
         return (
             f"{self.source}: {self.done}/{self.tasks} task(s), {self.stored} stored "
             f"({self.downloaded} downloaded, {self.known} already known, {self.hits} seen), "
-            f"{self.new_authors} new uploader(s){shifts}, {self.failures} failure(s){dead}, "
+            f"{self.new_authors} new uploader(s){cats}, {self.failures} failure(s){dead}, "
             f"{self.elapsed:.0f}s"
         )
 
@@ -300,10 +306,6 @@ class Runner:
 
         self.discovered = DiscoveredUploaders(Path(self.cfg.run.discovered_uploaders_file))
 
-        from ricercar.shifts import CategoryShiftTracker
-
-        self.shifts = CategoryShiftTracker(Path(self.cfg.run.category_shifts_file))
-
     # ── Entry point ─────────────────────────────────────────────────────
 
     async def run(self) -> RunOutcome:
@@ -328,7 +330,6 @@ class Runner:
                     self.state.save()
                     self.history.save()
                     self.discovered.save()
-                    self.shifts.save()
         finally:
             self.shutdown.restore()
 
@@ -379,11 +380,44 @@ class Runner:
 
         stale: list[TaskYield] = []
         task_results: dict[str, list[str]] = {}
+        categories_changed: bool = False
         try:
             async with managed_browser(source, self.cfg) as session:
-                stale, task_results = await self._drive(
-                    source, session, tasks, budget, outcome, progress
-                )
+                # Check whether the forum-section structure has changed.  We ask the
+                # live site (or the offline fixtures) for the current category list and
+                # compare it with the bundled snapshot.  If something has changed the
+                # pipeline skips the search and reports the difference through the
+                # notifier.
+                check_page = await session.context.new_page()
+                try:
+                    await call(
+                        f"{source.name} categories check",
+                        lambda: source.ensure_logged_in(check_page),
+                        policies=self.policies,
+                    )
+                    from ricercar.sources.rutracker.categories import (  # noqa: PLC0415
+                        fetch_categories,
+                    )
+
+                    live = await fetch_categories(check_page)
+                    diff = check_categories(live)
+                    if diff is not None:
+                        outcome.category_diff = diff
+                        categories_changed = True
+                        log.warning(
+                            "{}: category structure changed — skipping search, "
+                            "run `ricercar categories check` for details",
+                            source.name,
+                        )
+                except Exception:
+                    log.warning("{}: failed to check categories, continuing anyway", source.name)
+                finally:
+                    await check_page.close()
+
+                if not categories_changed:
+                    stale, task_results = await self._drive(
+                        source, session, tasks, budget, outcome, progress
+                    )
         except SessionExpiredError as exc:
             outcome.failures += 1
             outcome.aborted = True
@@ -407,15 +441,13 @@ class Runner:
                         continue
                     if (stat := _yields.get(plan.origin)) is not None:
                         _task_history[plan.label] = stat
-            # Collect category shifts that need to be notified.
-            _shifts = self.shifts.unread(source.name)
             await self.notifier.run_finished(
                 source.name,
                 tasks=len(tasks),
                 downloaded=outcome.downloaded,
                 stored=outcome.stored,
                 new_authors=outcome.new_authors,
-                category_shifts=_shifts,
+                category_diff=outcome.category_diff,
                 elapsed=outcome.elapsed,
                 interrupted=self.shutdown.requested,
                 stale=[stat.description or stat.key for stat in stale],
@@ -423,11 +455,6 @@ class Runner:
                 task_results=task_results,
                 task_history=_task_history or None,
             )
-            # Mark shifts as notified after successful delivery.
-            # (We mark them unconditionally — the tracker is local and the file is
-            # safe; in future this could check the notifier's return value.)
-            if _shifts:
-                self.shifts.mark_all_notified(source.name)
         return outcome
 
     async def _drive(
@@ -701,13 +728,6 @@ class Runner:
                             author,
                             section=cat if isinstance(cat, int) else None,
                         )
-                    # Detect category shifts for *every* hit's author, not just new ones.
-                    for hit in hits:
-                        cat = task.category
-                        if hit.author and isinstance(cat, int):
-                            shift = self.shifts.observe(source.name, hit.author, cat)
-                            if shift is not None:
-                                outcome.new_shifts += 1
                     for hit in hits:
                         outcome.hits += 1
                         if self.shutdown.requested:
@@ -953,13 +973,14 @@ class Runner:
         and the quota then count. Tasks finished earlier today are dropped when resuming,
         which is what makes an interrupted run pick up where it stopped.
 
-        When resuming, any task that was **allocated** earlier today but not yet completed
-        is prioritised — random sampling only fills the remaining slots, so a run
-        interrupted by the quota picks up exactly the tasks it had not reached yet.
+        When resuming, **only** the tasks that were allocated earlier today but not yet
+        completed are run — no new tasks (not even ``must_complete``) are added, so the
+        set of pending work shrinks monotonically instead of accumulating across runs.
+        Only when there is *nothing* unfinished does normal sampling kick in.
         """
         log = get_logger()
-        chosen = list(source.settings.must_complete_tasks)
-        pool = list(source.settings.tasks)
+        chosen: list[SearchTask] = []
+        pool: list[SearchTask] = []
 
         if self.resume:
             done = self.state.completed_today(source.name)
@@ -967,23 +988,23 @@ class Runner:
             unfinished = allocated - done
 
             if unfinished:
-                # Pick the unfinished tasks from the pool first, so the next run
-                # continues where it left off.
                 log.info(
-                    "{}: resuming — {} task(s) were allocated but not finished yet",
+                    "{}: resuming — {} task(s) were allocated but not finished yet; "
+                    "no new tasks will be added until those are done",
                     source.name,
                     len(unfinished),
                 )
-                # must_complete tasks are always included; plain tasks are added if
-                # they were allocated earlier and aren't done.
-                must_keys = {task_key(t) for t in source.settings.must_complete_tasks}
-                leftover = [
-                    t for t in pool if task_key(t) in unfinished and task_key(t) not in must_keys
-                ]
-                chosen.extend(leftover)
-                # Remove the unfinished ones from the pool so random sampling
-                # does not pick them again.
-                pool = [t for t in pool if task_key(t) not in unfinished]
+                all_tasks = [*source.settings.must_complete_tasks, *source.settings.tasks]
+                unfinished_set = unfinished
+                chosen = [t for t in all_tasks if task_key(t) in unfinished_set]
+                # pool stays empty → no random sampling.
+            else:
+                # Nothing unfinished — proceed as normal for the rest of the day.
+                chosen = list(source.settings.must_complete_tasks)
+                pool = list(source.settings.tasks)
+        else:
+            chosen = list(source.settings.must_complete_tasks)
+            pool = list(source.settings.tasks)
 
         if pool:
             chosen.extend(random.sample(pool, min(source.settings.random_choice, len(pool))))

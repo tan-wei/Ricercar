@@ -61,6 +61,8 @@ class Selectors:
     """Button that applies the search page's filters."""
     download_link: str = 'a.dl-link[href*="dl.php"]'
     """Download anchor on a topic page — absent when the torrent is unavailable."""
+    category_list: str = '#fs-main option[id^="fs-"][value]:not([value="-1"])'
+    """Every forum section in the category dropdown; used for change detection."""
 
     # ── URL building ────────────────────────────────────────────────────
 
