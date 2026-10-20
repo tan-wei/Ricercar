@@ -143,6 +143,43 @@ class PlannedSearch:
         return task_key(self.task)
 
 
+def _task_from_key(key: str) -> SearchTask:
+    """Reverse :func:`task_key` — reconstruct a :class:`SearchTask` from its key.
+
+    Key format: ``text=<text>|author=<author>|category=<category>`` where empty
+    fields mean the value was ``None``/``""``/``0``.
+    """
+    text = ""
+    author: str | None = None
+    category: int | None = None
+    for part in key.split("|"):
+        if part.startswith("text="):
+            text = part.removeprefix("text=")
+        elif part.startswith("author="):
+            raw = part.removeprefix("author=")
+            author = raw if raw else None
+        elif part.startswith("category="):
+            raw = part.removeprefix("category=")
+            category = int(raw) if raw else None
+    return SearchTask(text=text, author=author, category=category)
+
+
+def _origin_from_key(key: str) -> str:
+    """Return the origin (parent task key) for a concrete search key.
+
+    The concrete key carries the *expanded* category, while the origin is the
+    unexpanded task key with an empty/default category.  Stripping the category
+    part leaves the origin.
+    """
+    parts = [p for p in key.split("|") if not p.startswith("category=")]
+    return "|".join(parts)
+
+
+def _describe_from_key(key: str) -> str:
+    """A human-readable label for a concrete search key."""
+    return describe_task(_task_from_key(key))
+
+
 @dataclass(slots=True)
 class _TaskRun:
     """What one configured task contributed to the run in progress."""
@@ -990,15 +1027,36 @@ class Runner:
 
             if unfinished:
                 log.info(
-                    "{}: resuming — {} task(s) were allocated but not finished yet; "
-                    "no new tasks will be added until those are done",
+                    "{}: resuming — {} task(s) were allocated but not finished yet",
                     source.name,
                     len(unfinished),
                 )
-                all_tasks = [*source.settings.must_complete_tasks, *source.settings.tasks]
-                unfinished_set = unfinished
-                chosen = [t for t in all_tasks if task_key(t) in unfinished_set]
-                # pool stays empty → no random sampling.
+                # Rebuild PlannedSearches directly from the stored keys rather than
+                # matching against config tasks: the stored keys are the *expanded*
+                # concrete searches (e.g. "text=|author=xxx|category=794"), while
+                # the config only has the unexpanded original
+                # ("text=|author=xxx|category=").  Matching against the config would
+                # find nothing and produce an empty task list — the bug this fixes.
+                resume_plans = {
+                    key: PlannedSearch(
+                        _task_from_key(key),
+                        _origin_from_key(key),
+                        _describe_from_key(key),
+                    )
+                    for key in sorted(unfinished)
+                }
+                tasks = list(resume_plans.values())
+                _remaining = [plan for plan in tasks if plan.key not in done]
+                if len(_remaining) != len(tasks):
+                    log.info(
+                        "{}: resuming — {} of {} pending task(s) were just finished",
+                        source.name,
+                        len(tasks) - len(_remaining),
+                        len(tasks),
+                    )
+                tasks = _remaining
+                self.state.mark_allocated(source.name, {plan.key for plan in tasks})
+                return tasks
             else:
                 # Nothing unfinished — proceed as normal for the rest of the day.
                 chosen = list(source.settings.must_complete_tasks)
