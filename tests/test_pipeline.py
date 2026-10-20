@@ -101,6 +101,53 @@ def _plans(runner: Runner, source: FakeSource) -> list[PlannedSearch]:
     return runner._tasks_for(source)
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        ("login", "Login failed"),
+        ("network", "Browser/network navigation failed"),
+        ("browser", "Browser connection or run setup failed"),
+    ],
+)
+def test_source_failures_are_reported_in_finish_email(
+    run_config: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    expected: str,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    import apprise
+    from playwright.async_api import Error as PlaywrightError
+
+    from ricercar.notify import Notifier
+    from ricercar.sources.base import SessionExpiredError
+
+    errors = {
+        "login": SessionExpiredError("no session"),
+        "network": PlaywrightError("network unavailable"),
+        "browser": RuntimeError("no browser"),
+    }
+    manager = MagicMock()
+    manager.__aenter__.side_effect = errors[failure]
+    monkeypatch.setattr("ricercar.pipeline.managed_browser", lambda *_args: manager)
+    notifier = Notifier()
+    send = AsyncMock(return_value=True)
+    monkeypatch.setattr(notifier, "send", send)
+    source = FakeSource(_settings(tasks=[SearchTask(text="Bach")], random_choice=1))
+    runner = _runner(run_config, source, notifier=notifier)
+    with runner.repo, new_progress() as progress:
+        outcome = asyncio.run(runner._run_source(source, progress))
+
+    assert outcome.aborted
+    assert outcome.failures == 1
+    body = send.call_args.args[1]
+    assert "## Run Issues" in body
+    assert expected in body
+    assert "zero downloads does not mean" in body
+    assert send.call_args.kwargs["notify_type"] == apprise.NotifyType.WARNING
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
 

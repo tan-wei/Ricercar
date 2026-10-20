@@ -14,6 +14,7 @@ the scheme of one apprise rejects.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Sequence
 from datetime import datetime
 
@@ -85,6 +86,16 @@ def _listing(tasks: Sequence[SearchTask], source: str = "") -> str:
     if len(tasks) > LISTED_TASKS:
         lines.append(f"- … and {len(tasks) - LISTED_TASKS} more")
     return "\n".join(lines) or "- (no tasks configured)"
+
+
+def _display_label(label: str, source: str) -> str:
+    return re.sub(
+        r"\bin category (\d+)\b",
+        lambda match: (
+            "in category " + _category_name(SearchTask(category=int(match.group(1))), source)
+        ),
+        label,
+    )
 
 
 class Notifier:
@@ -172,7 +183,7 @@ class Notifier:
         """Announce a run and what it is about to search for."""
         return await self.send(
             f"[{source}] Going to start {len(tasks)} task(s) at {_stamp(when)}",
-            f"## {source}\n\n**{len(tasks)} task(s)**\n\n{_listing(tasks)}",
+            f"## {source}\n\n**{len(tasks)} task(s)**\n\n{_listing(tasks, source)}",
         )
 
     async def run_finished(
@@ -187,6 +198,8 @@ class Notifier:
         category_diff: CategoryDiff | None = None,
         elapsed: float = 0.0,
         interrupted: bool = False,
+        failures: int = 0,
+        failure_details: Sequence[str] = (),
         stale: Sequence[str] = (),
         stale_days: int = 0,
         task_results: dict[str, list[str]] | None = None,
@@ -216,6 +229,16 @@ class Notifier:
         """
         head = "Interrupted after" if interrupted else "Downloaded"
         lines: list[str] = []
+
+        if failures or failure_details:
+            lines.append("## Run Issues\n")
+            status = f"{failures} failure(s)." if failures else "A preliminary check failed."
+            lines.append(
+                f"**{status} Results may be incomplete; "
+                "zero downloads does not mean no new torrents were available.**\n"
+            )
+            lines.extend(f"- {_display_label(detail, source)}" for detail in failure_details)
+            lines.append("\n---\n")
 
         # ── 1. Category changes banner (top of message, highlighted) ────
         if category_diff and category_diff.has_changes:
@@ -248,6 +271,8 @@ class Notifier:
             lines.append("## 👤 New Uploaders\n")
             for author in shown:
                 lines.append(f"- ``{author}``")
+            if rest > 0:
+                lines.append(f"- ... and {rest} more uploader(s) omitted")
             lines.append("")
             lines.append(
                 "Run ``ricercar tasks --add-discovered`` to turn them into tasks, "
@@ -277,7 +302,9 @@ class Notifier:
                 shown = names[:LISTED_TORRENTS]
                 rest = len(names) - LISTED_TORRENTS
                 more = f"\n*… and {rest} more*" if rest > 0 else ""
-                task_sections.append(f"\n### {label} ({len(names)} torrent(s))\n")
+                task_sections.append(
+                    f"\n### {_display_label(label, source)} ({len(names)} torrent(s))\n"
+                )
                 task_sections.append("\n".join(f"- {n}" for n in shown) + more + "\n")
             summary_parts = []
             if _tasks_with:
@@ -302,12 +329,12 @@ class Notifier:
                 lines.append("|------|----------|")
                 for label, ys in quiet:
                     last = f"{ys.days_without_hit() or 0}d ago" if ys.last_hit else "never"
-                    lines.append(f"| {label} | {last} |")
+                    lines.append(f"| {_display_label(label, source)} | {last} |")
                 lines.append("")
 
         # ── 6. Stale tasks ──────────────────────────────────────────────
         if stale:
-            stale_shown = ", ".join(stale[:LISTED_DEAD])
+            stale_shown = ", ".join(_display_label(label, source) for label in stale[:LISTED_DEAD])
             stale_rest = len(stale) - LISTED_DEAD
             stale_more = f" … and {stale_rest} more" if stale_rest > 0 else ""
             lines.append("")
@@ -319,7 +346,11 @@ class Notifier:
         return await self.send(
             f"[{source}] Finish {stored} torrent(s) at {_stamp(when)}",
             "\n".join(lines),
-            notify_type=apprise.NotifyType.WARNING if interrupted else apprise.NotifyType.SUCCESS,
+            notify_type=(
+                apprise.NotifyType.WARNING
+                if interrupted or failures or failure_details
+                else apprise.NotifyType.SUCCESS
+            ),
         )
 
 

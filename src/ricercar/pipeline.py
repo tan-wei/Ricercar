@@ -252,6 +252,7 @@ class SourceOutcome:
     category_diff: CategoryDiff | None = None
     """Set when the live category list diverges from the bundled snapshot."""
     failures: int = 0
+    failure_details: list[str] = field(default_factory=list)
     stale: int = 0
     """Tasks that have found nothing for long enough to be worth removing."""
     elapsed: float = 0.0
@@ -448,7 +449,16 @@ class Runner:
                             "run `ricercar categories check` for details",
                             source.name,
                         )
-                except Exception:
+                except Exception as exc:
+                    reason = (
+                        "login/session"
+                        if isinstance(exc, SessionExpiredError)
+                        else type(exc).__name__
+                    )
+                    outcome.failure_details.append(
+                        f"Category check failed ({reason}); "
+                        "the category structure could not be verified. Search was attempted anyway."
+                    )
                     log.warning("{}: failed to check categories, continuing anyway", source.name)
                 finally:
                     await check_page.close()
@@ -461,12 +471,29 @@ class Runner:
             outcome.failures += 1
             outcome.aborted = True
             outcome.skipped = "no usable session"
+            outcome.failure_details.append(
+                "Login failed: no usable session. Complete Cloudflare verification and "
+                "sign in in the attached browser, then retry."
+            )
+            log.error("{}: {}", source.name, exc)
+        except (PlaywrightError, OSError) as exc:
+            outcome.failures += 1
+            outcome.aborted = True
+            outcome.skipped = "browser/network navigation failed"
+            outcome.failure_details.append(
+                f"Browser/network navigation failed ({type(exc).__name__}). "
+                "Check tracker access and the attached browser; the run could not complete."
+            )
             log.error("{}: {}", source.name, exc)
         except RuntimeError as exc:
             # The browser is not running, or it has no tab open.
             outcome.failures += 1
             outcome.aborted = True
             outcome.skipped = str(exc).splitlines()[0]
+            outcome.failure_details.append(
+                "Browser connection or run setup failed. Check that the browser is running "
+                "and its configured CDP endpoint is reachable."
+            )
             log.error("{}: {}", source.name, exc)
         finally:
             outcome.stale = len(stale)
@@ -488,6 +515,8 @@ class Runner:
                 category_diff=outcome.category_diff,
                 elapsed=outcome.elapsed,
                 interrupted=self.shutdown.requested,
+                failures=outcome.failures,
+                failure_details=outcome.failure_details,
                 stale=[stat.description or stat.key for stat in stale],
                 stale_days=self.cfg.run.stale_task_days,
                 task_results=task_results,
@@ -552,6 +581,9 @@ class Runner:
                 except SelectorsBrokenError as exc:
                     failures_in_a_row += 1
                     outcome.failures += 1
+                    outcome.failure_details.append(
+                        f"Search page structure was not recognized: {plan.label}."
+                    )
                     await self.recorder.capture(results_page, "selectors", issues=exc.issues)
                     log.error(
                         "{}: the page does not match the selectors any more — {}",
@@ -569,6 +601,10 @@ class Runner:
                     continue
                 except SiteUnderMaintenanceError as exc:
                     outcome.failures += 1
+                    outcome.failure_details.append(
+                        "Tracker maintenance or access challenge persisted after retries: "
+                        f"{plan.label}."
+                    )
                     log.warning(
                         "{}: {} — the site is under maintenance, gave up after "
                         "{} retries, moving on to the next task",
@@ -584,6 +620,10 @@ class Runner:
                 except PlaywrightTimeout as exc:
                     issues = await self._diagnose(source, results_page)
                     outcome.failures += 1
+                    outcome.failure_details.append(
+                        f"Search timed out after retries: {plan.label}. "
+                        "Check network access, Cloudflare verification and the browser session."
+                    )
                     await self.recorder.capture(
                         results_page,
                         "selectors" if issues else "timeout",
@@ -886,11 +926,18 @@ class Runner:
             return None
         except SelectorsBrokenError as exc:
             outcome.failures += 1
+            outcome.failure_details.append(
+                f"Torrent topic {hit.topic_id}: page structure was not recognized."
+            )
             await self.recorder.capture(topic_page, "topic-page", issues=exc.issues, note=hit.url)
             log.error("{}: the topic page does not look right — {}", hit.url, "; ".join(exc.issues))
             return None
         except PlaywrightTimeout as exc:
             outcome.failures += 1
+            outcome.failure_details.append(
+                f"Torrent topic {hit.topic_id}: download timed out after retries; "
+                "check network access and the browser session."
+            )
             await self.recorder.capture(topic_page, "download-timeout", note=f"{hit.url}: {exc}")
             log.warning("Giving up on {}: {}", hit.url, exc)
             return None
@@ -899,6 +946,9 @@ class Runner:
             meta = parse_file(path)
         except TorrentError as exc:
             outcome.failures += 1
+            outcome.failure_details.append(
+                f"Torrent topic {hit.topic_id}: the downloaded torrent could not be parsed."
+            )
             log.error("Unreadable torrent from {}: {}", hit.url, exc)
             return None
 
