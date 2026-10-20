@@ -101,6 +101,302 @@ def _plans(runner: Runner, source: FakeSource) -> list[PlannedSearch]:
     return runner._tasks_for(source)
 
 
+def test_task_reviews_include_unsampled_tasks_and_exclude_old_config(run_config: Settings) -> None:
+    tasks = [SearchTask(text="Bach"), SearchTask(text="Mozart")]
+    source = FakeSource(_settings(tasks=tasks))
+    runner = _runner(run_config, source)
+    runner.history.record(
+        "fake", task_key(SearchTask(text="removed")), "removed", searches=1, hits=0, stored=0
+    )
+    outcome = SourceOutcome(source="fake", task_status={task_key(tasks[0]): "completed"})
+    reviews = runner._task_reviews(source, outcome)
+    assert [(task.text, status) for task, _, status in reviews] == [
+        ("Bach", "completed"),
+        ("Mozart", "not run"),
+    ]
+
+
+@pytest.mark.parametrize("category", [None, 1])
+def test_resumed_searches_keep_their_configured_history_key(
+    run_config: Settings,
+    category: int | None,
+) -> None:
+    task = SearchTask(text="Bach", category=category)
+    source = FakeSource(_settings(tasks=[task]), per_task=2)
+    runner = _runner(run_config, source)
+    runner.state.mark_allocated(source.name, {task_key(item) for item in source.expand(task)})
+    plans = _plans(runner, source)
+    assert {plan.origin for plan in plans} == {task_key(task)}
+    assert {plan.label for plan in plans} == {describe_task(task)}
+
+
+@pytest.mark.parametrize("second", ["not run", "failed", "completed"])
+def test_review_requires_all_categories_to_complete(run_config: Settings, second: str) -> None:
+    task = SearchTask(text="Bach")
+    source = FakeSource(_settings(tasks=[task]), per_task=2)
+    runner = _runner(run_config, source)
+    expanded = source.expand(task)
+    outcome = SourceOutcome(
+        source="fake",
+        task_status={
+            task_key(expanded[0]): "completed",
+            task_key(expanded[1]): second,
+        },
+    )
+    assert (
+        runner._task_reviews(source, outcome)[0][2]
+        == {
+            "not run": "incomplete",
+            "failed": "failed",
+            "completed": "completed",
+        }[second]
+    )
+
+
+def test_candidates_exclude_covered_authors_but_keep_uncovered_sections(
+    run_config: Settings,
+) -> None:
+    source = FakeSource(
+        _settings(
+            tasks=[
+                SearchTask(author="covered"),
+                SearchTask(author="section", category=1),
+                SearchTask(author="filtered", text="Bach"),
+                SearchTask(text="Mozart"),
+            ]
+        )
+    )
+    runner = _runner(run_config, source)
+    for author, section in [("COVERED", 1), ("section", 1), ("filtered", 1), ("new", 1)]:
+        runner.discovered.record("fake", author, section=section)
+    runner.discovered.record("other", "foreign", section=1)
+    assert {u.author for u in runner._candidate_uploaders(source)} == {"filtered", "new"}
+    runner.discovered.record("fake", "section", section=2)
+    assert {u.author for u in runner._candidate_uploaders(source)} == {"section", "filtered", "new"}
+
+
+@pytest.mark.parametrize("result", ["empty", "partial", "timeout", "download failure"])
+def test_drive_distinguishes_empty_success_from_incomplete_or_failed_searches(
+    run_config: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    result: str,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from playwright.async_api import TimeoutError as PlaywrightTimeout
+
+    task = SearchTask(text="Bach")
+    source = FakeSource(_settings(tasks=[task]))
+    runner = _runner(run_config, source)
+    session = MagicMock()
+    session.context.new_page = AsyncMock(return_value=AsyncMock())
+    monkeypatch.setattr(runner, "_prepare", AsyncMock())
+    monkeypatch.setattr(runner, "_diagnose", AsyncMock(return_value=()))
+    monkeypatch.setattr(runner.recorder, "capture", AsyncMock())
+    outcome = SourceOutcome(source="fake")
+
+    async def run_task(*_args: object) -> tuple[bool, list[str]]:
+        if result == "timeout":
+            raise PlaywrightTimeout("timeout")
+        if result == "download failure":
+            outcome.failures += 1
+        return result != "partial", []
+
+    monkeypatch.setattr(runner, "_run_task", run_task)
+    with new_progress() as progress:
+        _, results = asyncio.run(
+            runner._drive(
+                source,
+                session,
+                _plans(runner, source),
+                10,
+                outcome,
+                progress,
+            )
+        )
+    assert (
+        outcome.task_status[task_key(task)]
+        == {
+            "empty": "completed",
+            "partial": "incomplete",
+            "timeout": "failed",
+            "download failure": "failed",
+        }[result]
+    )
+    history = runner.history.yields("fake")
+    if result == "empty":
+        assert results == {"Bach": []}
+        assert history[task_key(task)].runs == 1
+    else:
+        assert results == {}
+        assert task_key(task) not in history
+
+
+def test_drive_combines_downloads_from_all_categories(
+    run_config: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    task = SearchTask(text="Bach")
+    source = FakeSource(_settings(tasks=[task]), per_task=2)
+    runner = _runner(run_config, source)
+    session = MagicMock()
+    session.context.new_page = AsyncMock(return_value=AsyncMock())
+    monkeypatch.setattr(runner, "_prepare", AsyncMock())
+    monkeypatch.setattr(
+        runner,
+        "_run_task",
+        AsyncMock(
+            side_effect=[(True, ["First torrent"]), (True, ["Second torrent"])],
+        ),
+    )
+    with new_progress() as progress:
+        _, results = asyncio.run(
+            runner._drive(
+                source,
+                session,
+                _plans(runner, source),
+                10,
+                SourceOutcome(source="fake"),
+                progress,
+            )
+        )
+    assert results == {"Bach": ["First torrent", "Second torrent"]}
+    assert runner.history.yields("fake")[task_key(task)].searches == 2
+
+
+def test_failed_category_keeps_positive_history_without_successful_run(
+    run_config: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from playwright.async_api import TimeoutError as PlaywrightTimeout
+
+    task = SearchTask(text="Bach")
+    source = FakeSource(_settings(tasks=[task]), per_task=2)
+    runner = _runner(run_config, source)
+    session = MagicMock()
+    session.context.new_page = AsyncMock(return_value=AsyncMock())
+    monkeypatch.setattr(runner, "_prepare", AsyncMock())
+    monkeypatch.setattr(runner, "_diagnose", AsyncMock(return_value=()))
+    monkeypatch.setattr(runner.recorder, "capture", AsyncMock())
+    outcome = SourceOutcome(source="fake")
+
+    async def run_task(
+        _source: object, plan: PlannedSearch, *_args: object
+    ) -> tuple[bool, list[str]]:
+        if plan.task.category == 2:
+            raise PlaywrightTimeout("timeout")
+        outcome.hits += 10
+        outcome.stored += 1
+        return True, ["Cantatas"]
+
+    monkeypatch.setattr(runner, "_run_task", run_task)
+    with new_progress() as progress:
+        asyncio.run(
+            runner._drive(
+                source,
+                session,
+                _plans(runner, source),
+                10,
+                outcome,
+                progress,
+            )
+        )
+    stat = runner.history.yields("fake")[task_key(task)]
+    assert stat.runs == 0
+    assert stat.stored == 1
+    assert stat.hits == 10
+    assert stat.last_stored is not None
+    assert stat.last_run is None
+    assert runner._task_reviews(source, outcome)[0][2] == "failed"
+
+
+def test_search_updates_known_uploader_observations(
+    run_config: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    source = FakeSource(_settings(tasks=[SearchTask(text="Bach", category=1)]))
+    runner = _runner(run_config, source)
+    runner.state.remember_authors("fake", ["collector"])
+    runner.discovered.record("fake", "collector", section=2, now="2020-01-01T00:00:00")
+
+    async def search(*_args: object, **_kwargs: object) -> AsyncIterator[SearchPage]:
+        yield SearchPage(
+            hits=[
+                SearchHit(
+                    topic_id="1",
+                    title="Bach",
+                    url="https://fake.example/t=1",
+                    author="collector",
+                )
+            ],
+            number=1,
+            total=1,
+        )
+
+    monkeypatch.setattr(source, "search", search, raising=False)
+    monkeypatch.setattr(runner, "_pace", AsyncMock())
+    monkeypatch.setattr(runner, "_download_hit", AsyncMock(return_value=None))
+    outcome = SourceOutcome(source="fake")
+    with runner.repo, new_progress() as progress:
+        bar = progress.add_task("torrents", total=10)
+        asyncio.run(
+            runner._run_task(
+                source,
+                _plans(runner, source)[0],
+                AsyncMock(),
+                AsyncMock(),
+                10,
+                outcome,
+                progress,
+                bar,
+            )
+        )
+    uploader = runner.discovered.unconfirmed("fake")[0]
+    assert uploader.hits == 2
+    assert set(uploader.sections_seen) == {1, 2}
+    assert uploader.last_seen != "2020-01-01T00:00:00"
+    assert outcome.new_authors == []
+
+
+def test_quota_limited_downloads_leave_task_incomplete(
+    run_config: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    source = FakeSource(_settings(tasks=[SearchTask(text="Bach", category=1)]))
+    runner = _runner(run_config, source)
+
+    async def search(*_args: object, **_kwargs: object) -> AsyncIterator[SearchPage]:
+        yield SearchPage(hits=[_hit("one"), _hit("two")], number=1, total=1)
+
+    monkeypatch.setattr(source, "search", search, raising=False)
+    monkeypatch.setattr(runner, "_pace", AsyncMock())
+    monkeypatch.setattr(runner, "_download_hit", AsyncMock(return_value="Bach"))
+    with runner.repo, new_progress() as progress:
+        bar = progress.add_task("torrents", total=1)
+        finished, names = asyncio.run(
+            runner._run_task(
+                source,
+                _plans(runner, source)[0],
+                AsyncMock(),
+                AsyncMock(),
+                1,
+                SourceOutcome(source="fake"),
+                progress,
+                bar,
+            )
+        )
+    assert not finished
+    assert names == ["Bach"]
+
+
 @pytest.mark.parametrize(
     ("failure", "expected"),
     [

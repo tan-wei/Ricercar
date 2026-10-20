@@ -280,23 +280,26 @@ class TaskHistory:
         hits: int,
         stored: int,
         day: str | None = None,
+        successful: bool = True,
     ) -> TaskYield:
         """Add one run of one task: what it searched, what it saw, what it brought.
 
         Only ever called for a task that actually ran — a search that failed before it
         produced a page is not this task's fault, and must not count against it.
+        Partial runs preserve positive observations without counting as successful runs.
         """
         self.load()
         moment = day or today()
         history = self._sources.setdefault(source, _SourceHistory())
         stat = history.tasks.setdefault(key, TaskYield(key=key, first_run=moment))
         stat.description = description or stat.description
-        stat.runs += 1
+        stat.runs += int(successful)
         stat.searches += max(searches, 0)
         stat.hits += max(hits, 0)
         stat.stored += max(stored, 0)
         stat.first_run = stat.first_run or moment
-        stat.last_run = moment
+        if successful:
+            stat.last_run = moment
         if hits > 0:
             stat.last_hit = moment
         if stored > 0:

@@ -42,6 +42,7 @@ from ricercar.browser import BrowserSession, managed_browser
 from ricercar.categories import CategoryDiff, check_categories
 from ricercar.config import SearchTask, Settings, get_settings
 from ricercar.diagnostics import Recorder
+from ricercar.discovery import DiscoveredUploader
 from ricercar.history import TaskHistory, TaskYield, configured_task_keys
 from ricercar.log import get_logger
 from ricercar.models import SearchHit
@@ -253,6 +254,8 @@ class SourceOutcome:
     """Set when the live category list diverges from the bundled snapshot."""
     failures: int = 0
     failure_details: list[str] = field(default_factory=list)
+    task_status: dict[str, str] = field(default_factory=dict)
+    task_results: dict[str, list[str]] = field(default_factory=dict)
     stale: int = 0
     """Tasks that have found nothing for long enough to be worth removing."""
     elapsed: float = 0.0
@@ -419,7 +422,8 @@ class Runner:
         await self.notifier.run_started(source.name, [plan.task for plan in tasks])
 
         stale: list[TaskYield] = []
-        task_results: dict[str, list[str]] = {}
+        task_results = outcome.task_results
+        outcome.task_status = {plan.key: "not run" for plan in tasks}
         categories_changed: bool = False
         try:
             async with managed_browser(source, self.cfg) as session:
@@ -498,12 +502,29 @@ class Runner:
         finally:
             outcome.stale = len(stale)
             outcome.elapsed = time.monotonic() - started
+            if outcome.aborted:
+                for key, status in outcome.task_status.items():
+                    if status in ("not run", "incomplete"):
+                        outcome.task_status[key] = "blocked"
+            reviews = self._task_reviews(source, outcome)
+            completed_keys = {stat.key for _, stat, status in reviews if status == "completed"}
+            stale = [stat for stat in stale if stat.key in completed_keys]
+            outcome.stale = len(stale)
+            unfinished_labels = {
+                plan.label for plan in tasks if outcome.task_status.get(plan.key) != "completed"
+            }
+            for label in unfinished_labels:
+                if label in task_results and not task_results[label]:
+                    del task_results[label]
             # Build per-task history stats from the cache for all tasks (used by
             # notify to report last-hit times for tasks that found nothing).
             _task_history: dict[str, TaskYield] = {}
             _yields = self.history.yields(source.name)
             for plan in tasks:
-                if (stat := _yields.get(plan.origin)) is not None:
+                if (
+                    plan.label not in unfinished_labels
+                    and (stat := _yields.get(plan.origin)) is not None
+                ):
                     _task_history[plan.label] = stat
             await self.notifier.run_finished(
                 source.name,
@@ -521,8 +542,64 @@ class Runner:
                 stale_days=self.cfg.run.stale_task_days,
                 task_results=task_results,
                 task_history=_task_history or None,
+                task_reviews=reviews,
+                candidate_uploaders=self._candidate_uploaders(source),
+                stale_runs=self.cfg.run.stale_task_runs,
             )
         return outcome
+
+    def _task_reviews(
+        self,
+        source: Source,
+        outcome: SourceOutcome,
+    ) -> list[tuple[SearchTask, TaskYield, str]]:
+        history = self.history.yields(source.name)
+        configured = {
+            task_key(task): task
+            for task in (*source.settings.must_complete_tasks, *source.settings.tasks)
+        }
+        reviews = []
+        for key, task in configured.items():
+            states = {
+                outcome.task_status.get(task_key(concrete), "not run")
+                for concrete in source.expand(task)
+            }
+            if "failed" in states:
+                status = "failed"
+            elif "blocked" in states:
+                status = "blocked"
+            elif "incomplete" in states or ("completed" in states and "not run" in states):
+                status = "incomplete"
+            elif states == {"completed"}:
+                status = "completed"
+            else:
+                status = "not run"
+            reviews.append((task, history.get(key, TaskYield(key=key)), status))
+        return reviews
+
+    def _candidate_uploaders(self, source: Source) -> list[DiscoveredUploader]:
+        configured = (*source.settings.must_complete_tasks, *source.settings.tasks)
+        candidates = []
+        for uploader in self.discovered.unconfirmed(source.name):
+            matches = [
+                task
+                for task in configured
+                if task.author
+                and task.author.casefold() == uploader.author.casefold()
+                and not task.text
+            ]
+            sections: set[int] = set()
+            for task in matches:
+                if isinstance(task.category, int):
+                    sections.add(task.category)
+                else:
+                    sections.update(source.settings.categories.values())
+            if (not uploader.sections_seen and matches) or (
+                uploader.sections_seen and set(uploader.sections_seen).issubset(sections)
+            ):
+                continue
+            candidates.append(uploader)
+        return candidates
 
     async def _drive(
         self,
@@ -548,7 +625,7 @@ class Runner:
         tasks_bar = progress.add_task(f"{source.name}: tasks", total=len(plans))
         failures_in_a_row = 0
         run_yields: dict[str, _TaskRun] = {}
-        task_results: dict[str, list[str]] = {}
+        task_results = outcome.task_results
         try:
             await self._prepare(source, session, results_page, topic_page)
 
@@ -566,6 +643,8 @@ class Runner:
 
                 seen_before = outcome.hits
                 stored_before = outcome.stored
+                failures_before = outcome.failures
+                outcome.task_status[plan.key] = "incomplete"
                 task_torrents: list[str] = []
                 try:
                     finished, task_torrents = await self._run_task(
@@ -579,6 +658,7 @@ class Runner:
                         torrents_bar,
                     )
                 except SelectorsBrokenError as exc:
+                    outcome.task_status[plan.key] = "failed"
                     failures_in_a_row += 1
                     outcome.failures += 1
                     outcome.failure_details.append(
@@ -600,6 +680,7 @@ class Runner:
                         break
                     continue
                 except SiteUnderMaintenanceError as exc:
+                    outcome.task_status[plan.key] = "failed"
                     outcome.failures += 1
                     outcome.failure_details.append(
                         "Tracker maintenance or access challenge persisted after retries: "
@@ -618,6 +699,7 @@ class Runner:
                     # redesign.
                     continue
                 except PlaywrightTimeout as exc:
+                    outcome.task_status[plan.key] = "failed"
                     issues = await self._diagnose(source, results_page)
                     outcome.failures += 1
                     outcome.failure_details.append(
@@ -651,13 +733,15 @@ class Runner:
                     continue
                 else:
                     failures_in_a_row = 0
-                    # The search produced a page, so it counts towards the task's yield —
-                    # a search that failed above does not, and must not look like "found
-                    # nothing".
-                    counted = run_yields.setdefault(plan.origin, _TaskRun(plan.label))
-                    counted.searches += 1
-                    counted.hits += outcome.hits - seen_before
-                    counted.stored += outcome.stored - stored_before
+                    if task_torrents:
+                        task_results.setdefault(plan.label, []).extend(task_torrents)
+                    if outcome.hits > seen_before or outcome.stored > stored_before:
+                        observed = run_yields.setdefault(plan.origin, _TaskRun(plan.label))
+                        observed.hits += outcome.hits - seen_before
+                        observed.stored += outcome.stored - stored_before
+                    if outcome.failures > failures_before:
+                        outcome.task_status[plan.key] = "failed"
+                        continue
                     if not finished:
                         log.warning(
                             "{}: {} was cut short — it stays on the list for the next run",
@@ -665,13 +749,22 @@ class Runner:
                             describe_task(task),
                         )
                         continue
+                    outcome.task_status[plan.key] = "completed"
+                    # The search produced a page, so it counts towards the task's yield —
+                    # a search that failed above does not, and must not look like "found
+                    # nothing".
+                    counted = run_yields.setdefault(plan.origin, _TaskRun(plan.label))
+                    counted.searches += 1
                     outcome.done += 1
                     self.state.mark_completed(source.name, task)
                     progress.advance(tasks_bar)
-                    if task_torrents:
-                        task_results[plan.label] = task_torrents
+                    task_results.setdefault(plan.label, [])
         finally:
-            self._record_yields(source, run_yields)
+            origins = {plan.origin for plan in plans}
+            unfinished = {
+                plan.origin for plan in plans if outcome.task_status.get(plan.key) != "completed"
+            }
+            self._record_yields(source, run_yields, origins - unfinished)
             progress.remove_task(tasks_bar)
             progress.remove_task(torrents_bar)
             await self.recorder.stop()
@@ -690,7 +783,12 @@ class Runner:
             task_results,
         )
 
-    def _record_yields(self, source: Source, run_yields: dict[str, _TaskRun]) -> None:
+    def _record_yields(
+        self,
+        source: Source,
+        run_yields: dict[str, _TaskRun],
+        successful_origins: set[str],
+    ) -> None:
         """Add this run's numbers to the history of each configured task."""
         for origin, counted in run_yields.items():
             self.history.record(
@@ -700,6 +798,7 @@ class Runner:
                 searches=counted.searches,
                 hits=counted.hits,
                 stored=counted.stored,
+                successful=origin in successful_origins,
             )
 
     def _report_stale(self, source: Source, stale: list[TaskYield]) -> list[TaskYield]:
@@ -765,7 +864,6 @@ class Runner:
         """
         log = get_logger()
         task = plan.task
-        torrent_names: list[str] = []
         logged_in_again = False
         pages_bar_label = f"  browsing: {describe_task(task)}"
         # No total yet: how many pages this search has is the pager's to say, and it
@@ -799,14 +897,14 @@ class Runner:
                         source.name, [hit.author for hit in hits]
                     )
                     outcome.new_authors.extend(new_authors)
-                    for author in new_authors:
-                        cat = task.category
-                        self.discovered.record(
-                            source.name,
-                            author,
-                            section=cat if isinstance(cat, int) else None,
-                        )
                     for hit in hits:
+                        if hit.author:
+                            cat = task.category
+                            self.discovered.record(
+                                source.name,
+                                hit.author,
+                                section=cat if isinstance(cat, int) else None,
+                            )
                         outcome.hits += 1
                         if self.shutdown.requested:
                             return False, new_hits
@@ -822,12 +920,13 @@ class Runner:
 
             return True, new_hits  # pragma: no cover — loop above returns
 
-        async def download_all(new_hits: list[SearchHit]) -> list[str]:
+        async def download_all(new_hits: list[SearchHit]) -> tuple[bool, list[str]]:
             """Download every hit in *new_hits*, respecting budget and shutdown."""
             nonlocal downloads_bar
             desc = f"    downloading: 0/{len(new_hits)}"
             downloads_bar = progress.add_task(desc, total=len(new_hits))
             stored: list[str] = []
+            processed = 0
             try:
                 for idx, hit in enumerate(new_hits):
                     if self.shutdown.requested:
@@ -840,11 +939,12 @@ class Runner:
                     )
                     await self._pace(source, progress, torrents_bar)
                     name = await self._download_hit(source, topic_page, hit, outcome)
+                    processed += 1
                     if name is not None:
                         stored.append(name)
                         progress.advance(torrents_bar)
                     progress.advance(downloads_bar)
-                return stored
+                return processed == len(new_hits) and not self.shutdown.requested, stored
             finally:
                 progress.remove_task(downloads_bar)
                 downloads_bar = None
@@ -859,8 +959,7 @@ class Runner:
                         return False, []
                     if not new_hits:
                         return True, []
-                    torrent_names = await download_all(new_hits)
-                    return True, torrent_names
+                    return await download_all(new_hits)
                 except SessionExpiredError as exc:
                     if logged_in_again:
                         raise
@@ -1087,11 +1186,18 @@ class Runner:
                 # the config only has the unexpanded original
                 # ("text=|author=xxx|category=").  Matching against the config would
                 # find nothing and produce an empty task list — the bug this fixes.
+                configured_origins: dict[str, tuple[str, str]] = {}
+                for task in (*source.settings.must_complete_tasks, *source.settings.tasks):
+                    for concrete in source.expand(task):
+                        configured_origins.setdefault(
+                            task_key(concrete),
+                            (task_key(task), describe_task(task)),
+                        )
                 resume_plans = {
                     key: PlannedSearch(
                         _task_from_key(key),
-                        _origin_from_key(key),
-                        _describe_from_key(key),
+                        configured_origins.get(key, (_origin_from_key(key), ""))[0],
+                        configured_origins.get(key, ("", _describe_from_key(key)))[1],
                     )
                     for key in sorted(unfinished)
                 }

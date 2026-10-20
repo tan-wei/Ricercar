@@ -22,6 +22,7 @@ import apprise
 
 from ricercar.categories import CategoryDiff
 from ricercar.config import NotifyConfig, SearchTask, get_settings
+from ricercar.discovery import DiscoveredUploader
 from ricercar.history import TaskYield
 from ricercar.log import get_logger
 
@@ -96,6 +97,95 @@ def _display_label(label: str, source: str) -> str:
         ),
         label,
     )
+
+
+def _task_review(
+    source: str,
+    reviews: Sequence[tuple[SearchTask, TaskYield, str]],
+    candidates: Sequence[DiscoveredUploader],
+    days: int,
+    runs: int,
+) -> list[str]:
+    groups: dict[str, list[str]] = {}
+    for task, stat, status in reviews:
+        if status in ("failed", "incomplete", "blocked"):
+            group = "Needs Attention"
+            reason = "Failed, blocked or incomplete; do not use this run as evidence for removal"
+        elif status == "not run":
+            group = "Insufficient Observation"
+            reason = "Not run this cycle; sample successfully before judging"
+        elif stat.stale(min_runs=runs, min_days=days):
+            group = "Consider Removing"
+            reason = f"No search results for at least {days} days; verify filters before removing"
+        elif stat.unrewarding(min_runs=runs, min_days=days):
+            group = "Consider Lower Frequency"
+            reason = f"Has search results but no new stored torrents for at least {days} days"
+        elif stat.last_stored and (stat.days_without_new() or 0) < days:
+            group = "Worth Keeping"
+            reason = "Recently stored new torrents"
+        else:
+            group = "Insufficient Observation"
+            reason = f"Needs at least {days} days of observation and {runs} successful runs"
+        hit = f"{stat.days_without_hit()}d ago" if stat.last_hit else "never"
+        stored = f"{stat.days_without_new()}d ago" if stat.last_stored else "never"
+        last_run = stat.last_run or "never"
+        label = _describe(task, source).replace("|", "\\|").replace("\n", " ")
+        groups.setdefault(group, []).append(
+            f"| {label} | {status} | {stat.age()} | {stat.runs} | {last_run} | {hit} | {stored} | "
+            f"{stat.stored} | {reason} |"
+        )
+    if not groups and not candidates:
+        return []
+    lines = [
+        "## Task Adjustment Suggestions\n",
+        (
+            f"Observation threshold: {days} days and {runs} successful runs. "
+            "Statistics are lifetime totals per configured task, across its categories; "
+            "result rows may repeat. Suggestions do not change the configuration.\n"
+        ),
+    ]
+    for group in (
+        "Needs Attention",
+        "Consider Removing",
+        "Consider Lower Frequency",
+        "Worth Keeping",
+        "Insufficient Observation",
+    ):
+        rows = groups.get(group, [])
+        if not rows:
+            continue
+        lines.extend(
+            [
+                f"### {group} ({len(rows)})\n",
+                "| Task | This Run | Observed Days | Successful Runs | Last Run | "
+                "Last Hit | Last Stored | Total Stored | Reason |",
+                "|------|----------|---------------|-----------------|----------|----------|-------------|--------------|--------|",
+                *rows,
+                "",
+            ]
+        )
+    if candidates:
+        lines.append(f"### Consider Adding ({len(candidates)})\n")
+        lines.append(
+            "Observed uploaders not already covered by uploader-only tasks. Review manually.\n"
+        )
+        for uploader in candidates[:20]:
+            sections = (
+                ", ".join(
+                    _category_name(SearchTask(category=section), source)
+                    for section in uploader.sections_seen
+                )
+                or "unknown"
+            )
+            lines.append(
+                f"- {uploader.author}: sections={sections}; "
+                f"first seen={uploader.first_seen[:10]}; last seen={uploader.last_seen[:10]}; "
+                f"observed result rows={uploader.hits} (not unique torrents)"
+            )
+        if len(candidates) > 20:
+            lines.append(f"- ... and {len(candidates) - 20} more candidate(s) omitted")
+        lines.append("")
+    return lines
 
 
 class Notifier:
@@ -204,6 +294,9 @@ class Notifier:
         stale_days: int = 0,
         task_results: dict[str, list[str]] | None = None,
         task_history: dict[str, TaskYield] | None = None,
+        task_reviews: Sequence[tuple[SearchTask, TaskYield, str]] = (),
+        candidate_uploaders: Sequence[DiscoveredUploader] = (),
+        stale_runs: int = 5,
         when: datetime | None = None,
     ) -> bool:
         """Report what a run did — including what it did not get to.
@@ -220,6 +313,10 @@ class Notifier:
         *task_history* maps a task label to its long-term :class:`TaskYield` stats.
         Only tasks that **did not** download anything this run are shown here, along
         with their time since last hit — so you can spot tasks that have gone quiet.
+
+        *task_reviews* includes every configured task, its lifetime history and this
+        cycle's execution status. *candidate_uploaders* excludes uploader-only tasks
+        already covering the observed sections. Advice never edits configuration.
 
         *category_diff* describes how the live site's forum-section list diverges from
         the bundled snapshot.  When present the pipeline skipped the search and reports
@@ -288,6 +385,15 @@ class Notifier:
             f"**{head} {stored} torrent(s){quota} ({downloaded} downloaded) "
             f"during {tasks} task(s), in {elapsed:.0f}s.**"
         )
+        lines.extend(
+            _task_review(
+                source,
+                task_reviews,
+                candidate_uploaders,
+                stale_days or 60,
+                stale_runs,
+            )
+        )
 
         # ── 4. Per-task download list ───────────────────────────────────
         if task_results:
@@ -318,10 +424,10 @@ class Notifier:
             lines.append("")
 
         # ── 5. Tasks with no download this run (show last_hit age) ──────
-        if task_history and task_results:
+        if task_history and task_results is not None:
             quiet: list[tuple[str, TaskYield]] = []
             for label, ys in sorted(task_history.items()):
-                if label not in task_results or not task_results[label]:
+                if label in task_results and not task_results[label]:
                     quiet.append((label, ys))
             if quiet:
                 lines.append("### ⏳ Tasks With No Download This Run\n")

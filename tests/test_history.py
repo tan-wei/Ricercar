@@ -71,6 +71,31 @@ def test_a_task_without_hits_never_claims_one(history: TaskHistory) -> None:
     assert stat.days_without_hit("2026-03-10") is None
 
 
+def test_partial_run_preserves_positive_evidence_without_success_count(
+    history: TaskHistory,
+) -> None:
+    stat = history.record(
+        "rutracker",
+        "Bach",
+        "Bach",
+        searches=0,
+        hits=10,
+        stored=2,
+        day="2026-03-01",
+        successful=False,
+    )
+    assert stat.runs == 0
+    assert stat.searches == 0
+    assert stat.last_run is None
+    assert stat.hits == 10
+    assert stat.stored == 2
+    assert stat.last_hit == stat.last_stored == "2026-03-01"
+    history.save()
+    loaded = TaskHistory(history._path).load().yields("rutracker")["Bach"]
+    assert loaded.runs == 0
+    assert loaded.stored == 2
+
+
 # ── When a task looks dead ────────────────────────────────────────────────
 
 
