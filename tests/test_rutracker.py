@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -14,6 +15,7 @@ from ricercar.config import SearchTask, SourceSettings
 from ricercar.models import SearchPage
 from ricercar.sources.base import SelectorsBrokenError, SiteUnderMaintenanceError
 from ricercar.sources.rutracker import RutrackerSource, parse_results, uploaders
+from ricercar.sources.rutracker import session as session_module
 from ricercar.sources.rutracker.diagnose import diagnose_results, diagnose_topic
 from ricercar.sources.rutracker.search import (
     _raise_if_unusable,
@@ -341,6 +343,180 @@ def test_the_outcomes_are_all_described() -> None:
     for outcome in LoginOutcome:
         assert outcome.value and outcome.value[0].islower()
     assert LoginOutcome.SIGNED_IN.value == "signed in"
+
+
+@pytest.fixture
+def login_controls(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, Any, Any, Any]:
+    page = MagicMock()
+    page.content = AsyncMock(return_value=login_page(LOGIN_FIELDS))
+    page.title = AsyncMock(return_value="Sign in")
+    page.wait_for_load_state = AsyncMock()
+    page.wait_for_timeout = AsyncMock()
+    username, password, submit, marker = (MagicMock() for _ in range(4))
+    for field in (username, password):
+        field.filter.return_value = field
+        field.count = AsyncMock(return_value=1)
+        field.first.fill = AsyncMock()
+        field.first.press = AsyncMock()
+    submit.count = AsyncMock(return_value=1)
+    submit.first.click = AsyncMock()
+    marker.count = AsyncMock(return_value=1)
+    marker.first.inner_text = AsyncMock(return_value=" Tester ")
+    username.first.locator.return_value.locator.return_value = submit
+    locators = {
+        DEFAULT_SELECTORS.login_username: username,
+        DEFAULT_SELECTORS.login_password: password,
+        DEFAULT_SELECTORS.logged_in: marker,
+    }
+    page.locator.side_effect = locators.__getitem__
+    monkeypatch.setattr(session_module, "goto", AsyncMock())
+    return page, username, password, submit, marker
+
+
+@pytest.mark.parametrize("state", ["signed-in", "absent", "other-user", "navigating"])
+def test_login_marker_handles_missing_wrong_and_navigating_pages(
+    login_controls: tuple[Any, Any, Any, Any, Any],
+    state: str,
+) -> None:
+    from playwright.async_api import Error as PlaywrightError
+
+    page, _, _, _, marker = login_controls
+    if state == "absent":
+        marker.count.return_value = 0
+    elif state == "other-user":
+        marker.first.inner_text.return_value = "someone else"
+    elif state == "navigating":
+        marker.count.side_effect = PlaywrightError("navigating")
+    assert asyncio.run(session_module.is_logged_in(page, "tester")) is (state == "signed-in")
+
+
+@pytest.mark.parametrize(
+    ("html", "expected"),
+    [
+        (CHALLENGE_HTML, LoginOutcome.BLOCKED),
+        (login_page(CAPTCHA_FIELDS), LoginOutcome.CAPTCHA),
+        (PLAIN_HTML, LoginOutcome.NO_FORM),
+    ],
+)
+def test_automatic_login_does_not_fill_challenge_captcha_or_unrelated_pages(
+    login_controls: tuple[Any, Any, Any, Any, Any],
+    html: str,
+    expected: LoginOutcome,
+) -> None:
+    page, username, password, _, _ = login_controls
+    page.content.return_value = html
+    assert asyncio.run(session_module.log_in(page, "tester", "test-password")) is expected
+    username.first.fill.assert_not_awaited()
+    password.first.fill.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["enter", "button", "hidden-user", "hidden-password", "fill-error", "refused", "no-button"],
+)
+def test_automatic_login_submission_paths_and_failures(
+    login_controls: tuple[Any, Any, Any, Any, Any],
+    mode: str,
+    log_messages: list[str],
+) -> None:
+    from playwright.async_api import Error as PlaywrightError
+
+    page, username, password, submit, marker = login_controls
+    if mode == "enter":
+        page.content.side_effect = [login_page(LOGIN_FIELDS), PLAIN_HTML]
+    elif mode == "hidden-user":
+        username.count.return_value = 0
+    elif mode == "hidden-password":
+        password.count.return_value = 0
+    elif mode == "fill-error":
+        username.first.fill.side_effect = PlaywrightError("cannot fill")
+    elif mode in ("refused", "no-button"):
+        marker.count.return_value = 0
+        if mode == "no-button":
+            submit.count.return_value = 0
+    outcome = asyncio.run(session_module.log_in(page, "tester", "not-a-real-password"))
+    if mode in ("enter", "button"):
+        assert outcome is LoginOutcome.SIGNED_IN
+        username.first.fill.assert_awaited_once_with("tester")
+        password.first.fill.assert_awaited_once_with("not-a-real-password")
+        password.first.press.assert_awaited_once_with("Enter")
+        username.filter.assert_called_once_with(visible=True)
+        password.filter.assert_called_once_with(visible=True)
+        if mode == "button":
+            submit.first.click.assert_awaited_once()
+        else:
+            submit.first.click.assert_not_awaited()
+    elif mode.startswith("hidden"):
+        assert outcome is LoginOutcome.NO_FORM
+        username.first.fill.assert_not_awaited()
+    else:
+        assert outcome is LoginOutcome.REFUSED
+    assert all("not-a-real-password" not in message for message in log_messages)
+
+
+@pytest.mark.parametrize("mode", ["reuse", "auto", "manual", "captcha", "timeout", "cloudflare"])
+def test_ensure_login_orders_navigation_clearance_and_session_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    log_messages: list[str],
+) -> None:
+    from unittest.mock import Mock
+
+    from ricercar.sources.base import SessionExpiredError
+
+    page = object()
+    calls = Mock()
+    navigate = AsyncMock()
+    clearance = AsyncMock(return_value=mode != "cloudflare")
+    check = AsyncMock(return_value=mode == "reuse")
+    automatic = AsyncMock(
+        return_value=LoginOutcome.SIGNED_IN if mode == "auto" else LoginOutcome.CAPTCHA
+    )
+    manual = AsyncMock(return_value=mode != "timeout")
+    for name, function in (
+        ("goto", navigate),
+        ("wait_for_cloudflare", clearance),
+        ("is_logged_in", check),
+        ("log_in", automatic),
+        ("wait_for_manual_login", manual),
+    ):
+        calls.attach_mock(function, name)
+        monkeypatch.setattr(session_module, name, function)
+    password = "" if mode == "manual" else "test-password"
+    if mode == "timeout":
+        with pytest.raises(SessionExpiredError, match="Timed out after 7s"):
+            asyncio.run(session_module.ensure_logged_in(page, "tester", password, timeout=7))
+    else:
+        asyncio.run(session_module.ensure_logged_in(page, "tester", password, timeout=7))
+    order = [call[0] for call in calls.mock_calls]
+    assert order[:3] == ["goto", "wait_for_cloudflare", "is_logged_in"]
+    if mode == "reuse":
+        automatic.assert_not_awaited()
+        manual.assert_not_awaited()
+    elif mode == "auto":
+        manual.assert_not_awaited()
+    else:
+        assert order[-1] == "wait_for_manual_login"
+        assert manual.call_args.kwargs["timeout"] == 7
+        check.return_value = True
+        assert asyncio.run(manual.call_args.args[1](page)) is True
+        if mode == "manual":
+            automatic.assert_not_awaited()
+    if mode == "cloudflare":
+        assert any("Cloudflare challenge did not clear" in message for message in log_messages)
+
+
+def test_ensure_login_propagates_navigation_failure_without_attempting_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from playwright.async_api import Error as PlaywrightError
+
+    automatic = AsyncMock()
+    monkeypatch.setattr(session_module, "goto", AsyncMock(side_effect=PlaywrightError("offline")))
+    monkeypatch.setattr(session_module, "log_in", automatic)
+    with pytest.raises(PlaywrightError, match="offline"):
+        asyncio.run(session_module.ensure_logged_in(object(), "tester", "test-password"))
+    automatic.assert_not_awaited()
 
 
 # ── Selectors ─────────────────────────────────────────────────────────────

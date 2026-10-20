@@ -673,20 +673,21 @@ def _handle_categories(args: argparse.Namespace) -> int:
         )
         return 1
 
+    if not live:
+        log.error("No live categories fetched; refusing to compare or replace the snapshot.")
+        CONSOLE.print("[red]No categories fetched — cannot check or update the snapshot.[/]")
+        return 1
+
     if args.action == "refresh":
         write_snapshot(live)
-        if live:
-            log.info("Updated data/categories.json with {} sections.", len(live))
-            CONSOLE.print(
-                f"[green]Snapshot updated: {len(live)} sections written to data/categories.json[/]"
-            )
-            CONSOLE.print(
-                "[yellow]If you need to adjust config.yml, do so manually — "
-                "translation and filtering cannot be automated.[/]"
-            )
-        else:
-            CONSOLE.print("[red]No categories fetched — snapshot was not updated.[/]")
-            return 1
+        log.info("Updated data/categories.json with {} sections.", len(live))
+        CONSOLE.print(
+            f"[green]Snapshot updated: {len(live)} sections written to data/categories.json[/]"
+        )
+        CONSOLE.print(
+            "[yellow]If you need to adjust config.yml, do so manually — "
+            "translation and filtering cannot be automated.[/]"
+        )
         return 0
 
     # Default: check.
