@@ -659,12 +659,19 @@ def _handle_categories(args: argparse.Namespace) -> int:
 
     try:
         live = asyncio.run(_fetch())
-    except Exception:
-        log.warning(
-            "Could not fetch live categories (connection problem or session "
-            "expired) — using diff against an empty baseline"
+    except Exception as exc:
+        log.error(
+            "Could not fetch live categories: {}. "
+            "This command requires a working connection to the tracker. "
+            "All differences reported below are caused by the fetch failure, "
+            "not by real changes.",
+            exc,
         )
-        live = {}
+        CONSOLE.print(
+            "[red]Could not reach the tracker — cannot check categories. "
+            "Make sure the browser is running and connected, then retry.[/]"
+        )
+        return 1
 
     if args.action == "refresh":
         write_snapshot(live)
