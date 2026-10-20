@@ -107,7 +107,7 @@ add-discovered:
     uv run ricercar tasks --add-discovered
 
 # Compare live section list with the bundled snapshot
-categories action check:
+categories action="check":
     uv run ricercar categories {{action}}
 
 # Overwrite the bundled snapshot with the live section list
