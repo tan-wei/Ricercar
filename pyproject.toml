@@ -9,7 +9,7 @@ authors = [
 ]
 
 dependencies = [
-    "playwright>=1.40",
+    "playwright>=1.64.0",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "bencode.py>=4.0",
