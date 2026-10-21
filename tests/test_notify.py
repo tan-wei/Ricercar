@@ -202,6 +202,20 @@ def test_start_notification_names_categories(
     )
 
 
+@pytest.mark.parametrize("budget", [None, 0, 20])
+def test_start_notification_title_includes_available_download_budget(budget: int | None) -> None:
+    notifier = Notifier()
+    sent = _capture_into(notifier)
+
+    asyncio.run(notifier.run_started("rutracker", [SearchTask(text="Bach")], budget=budget))
+
+    assert "[rutracker] Going to start 1 task(s)" in sent["title"]
+    if budget is None:
+        assert "up to" not in sent["title"]
+    else:
+        assert f", up to {budget} torrent(s) at " in sent["title"]
+
+
 def test_a_finish_notification_names_the_tasks_worth_removing() -> None:
     notifier = Notifier()
     sent = _capture_into(notifier)

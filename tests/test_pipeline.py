@@ -785,6 +785,24 @@ def test_whole_run_searches_stores_notifies_and_persists_without_browser(
     assert send.await_count == 2
 
 
+@pytest.mark.parametrize(("limit", "expected"), [(None, 4), (2, 2), (20, 4)])
+def test_start_email_uses_remaining_daily_quota_capped_by_run_limit(
+    browser_run: tuple[Runner, ReplaySource, Any, list[Any]],
+    limit: int | None,
+    expected: int,
+) -> None:
+    runner, source, send, _ = browser_run
+    source.settings.quota.limit_torrents_one_day = 5
+    runner.limit = limit
+    with TorrentRepository(runner.cfg.db_path) as repo:
+        repo.add(_meta("https://fake.example/viewtopic.php?t=previous", "a" * 32), b"x")
+
+    outcome = asyncio.run(runner.run())
+
+    assert outcome.failures == 0
+    assert f", up to {expected} torrent(s) at " in send.call_args_list[0].args[0]
+
+
 def test_partial_category_success_then_login_failure_is_not_reported_as_empty_success(
     browser_run: tuple[Runner, ReplaySource, Any, list[Any]],
     monkeypatch: pytest.MonkeyPatch,

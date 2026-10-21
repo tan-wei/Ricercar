@@ -268,11 +268,13 @@ class Notifier:
         source: str,
         tasks: Sequence[SearchTask],
         *,
+        budget: int | None = None,
         when: datetime | None = None,
     ) -> bool:
         """Announce a run and what it is about to search for."""
+        capacity = f", up to {budget} torrent(s)" if budget is not None else ""
         return await self.send(
-            f"[{source}] Going to start {len(tasks)} task(s) at {_stamp(when)}",
+            f"[{source}] Going to start {len(tasks)} task(s){capacity} at {_stamp(when)}",
             f"## {source}\n\n**{len(tasks)} task(s)**\n\n{_listing(tasks, source)}",
         )
 

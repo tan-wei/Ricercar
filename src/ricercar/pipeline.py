@@ -419,7 +419,7 @@ class Runner:
             len(tasks),
             budget,
         )
-        await self.notifier.run_started(source.name, [plan.task for plan in tasks])
+        await self.notifier.run_started(source.name, [plan.task for plan in tasks], budget=budget)
 
         stale: list[TaskYield] = []
         task_results = outcome.task_results
