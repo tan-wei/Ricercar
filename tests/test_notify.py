@@ -255,6 +255,39 @@ def test_all_dead_tasks_are_listed() -> None:
         assert f"task {i}" in sent["body"]
 
 
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_finish_explains_run_limit_and_every_attempt_not_stored(interrupted: bool) -> None:
+    notifier = Notifier()
+    sent = _capture_into(notifier)
+    details = [
+        "Topic B (https://tracker.example/topic/2): Already stored as 'Bach'; "
+        "added 2026-10-20: https://tracker.example/topic/1 (duplicate content)",
+        "Topic D (https://tracker.example/topic/4): Download timed out after retries.",
+    ]
+
+    asyncio.run(
+        notifier.run_finished(
+            "rutracker",
+            tasks=3,
+            downloaded=4,
+            stored=2,
+            budget=68,
+            interrupted=interrupted,
+            not_stored_details=details,
+        )
+    )
+
+    head = "Interrupted after storing" if interrupted else "Stored"
+    assert f"{head} 2 new torrent(s) from 4 download attempt(s)" in sent["body"]
+    assert "Run limit: at most 68 new torrent(s) may be stored this run." in sent["body"]
+    assert "### Download Attempts Not Stored" in sent["body"]
+    assert "2 attempt(s) did not add a new torrent" in sent["body"]
+    for detail in details:
+        assert f"- {detail}" in sent["body"]
+    assert "4 downloaded" not in sent["body"]
+    assert " / 68" not in sent["body"]
+
+
 def test_a_healthy_finish_says_nothing_about_tasks() -> None:
     notifier = Notifier()
     sent = _capture_into(notifier)
@@ -262,6 +295,8 @@ def test_a_healthy_finish_says_nothing_about_tasks() -> None:
     asyncio.run(notifier.run_finished("rutracker", tasks=1, downloaded=1, stored=1))
 
     assert "found nothing" not in sent["body"]
+    assert "Download Attempts Not Stored" not in sent["body"]
+    assert "Run limit" not in sent["body"]
 
 
 @pytest.mark.parametrize("count", [20, 21, 25])

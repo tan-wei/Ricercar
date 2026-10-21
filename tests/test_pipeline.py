@@ -771,7 +771,7 @@ def test_whole_run_searches_stores_notifies_and_persists_without_browser(
     assert len(source.fetched) == 1
     assert send.await_count == 2
     assert "Going to start" in send.call_args_list[0].args[0]
-    assert "Downloaded 1 torrent(s)" in send.call_args_list[1].args[1]
+    assert "Stored 1 new torrent(s) from 1 download attempt(s)" in send.call_args_list[1].args[1]
     assert "Task Adjustment Suggestions" in send.call_args_list[1].args[1]
     for page in pages:
         page.close.assert_awaited_once()
@@ -801,6 +801,43 @@ def test_start_email_uses_remaining_daily_quota_capped_by_run_limit(
 
     assert outcome.failures == 0
     assert f", up to {expected} torrent(s) at " in send.call_args_list[0].args[0]
+
+
+def test_whole_run_explains_every_download_attempt_not_stored_in_mail_and_warning_log(
+    browser_run: tuple[Runner, ReplaySource, Any, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+
+    from ricercar.log import get_logger
+    from ricercar.sources.base import TorrentUnavailableError
+
+    runner, source, send, _ = browser_run
+    source.pages = [[_hit("stored"), _hit("duplicate"), _hit("unavailable")]]
+    original_fetch = source.fetch_torrent
+    warning = Mock(wraps=get_logger().warning)
+    monkeypatch.setattr(get_logger(), "warning", warning)
+
+    async def fetch(page: object, hit: SearchHit, directory: object) -> Any:
+        if hit.topic_id == "unavailable":
+            raise TorrentUnavailableError("torrent removed by its uploader")
+        return await original_fetch(page, hit, directory)
+
+    monkeypatch.setattr(source, "fetch_torrent", fetch)
+
+    outcome = asyncio.run(runner.run()).sources[0]
+
+    assert outcome.downloaded == 3
+    assert outcome.stored == 1
+    assert len(outcome.not_stored_details) == outcome.downloaded - outcome.stored == 2
+    body = send.call_args.args[1]
+    assert "Stored 1 new torrent(s) from 3 download attempt(s)" in body
+    assert "2 attempt(s) did not add a new torrent" in body
+    assert "duplicate content" in body
+    assert "torrent removed by its uploader" in body
+    for detail in outcome.not_stored_details:
+        assert detail in body
+        warning.assert_any_call("Not stored: {}", detail)
 
 
 def test_partial_category_success_then_login_failure_is_not_reported_as_empty_success(
@@ -1229,6 +1266,7 @@ def test_download_failures_record_the_right_outcome_and_evidence(
 
     from playwright.async_api import TimeoutError as PlaywrightTimeout
 
+    from ricercar.log import get_logger
     from ricercar.parser import TorrentError
     from ricercar.sources.base import SelectorsBrokenError, TorrentUnavailableError
 
@@ -1236,6 +1274,8 @@ def test_download_failures_record_the_right_outcome_and_evidence(
     runner = _runner(run_config, source)
     capture = AsyncMock()
     monkeypatch.setattr(runner.recorder, "capture", capture)
+    warning = Mock(wraps=get_logger().warning)
+    monkeypatch.setattr(get_logger(), "warning", warning)
     if failure == "torrent":
         monkeypatch.setattr("ricercar.pipeline.parse_file", Mock(side_effect=TorrentError("bad")))
     else:
@@ -1245,30 +1285,68 @@ def test_download_failures_record_the_right_outcome_and_evidence(
             "timeout": PlaywrightTimeout("timeout"),
         }
         monkeypatch.setattr("ricercar.pipeline.call", AsyncMock(side_effect=errors[failure]))
-        outcome = SourceOutcome(source=source.name)
-        with runner.repo:
-            result = asyncio.run(runner._download_hit(source, None, _hit("one"), outcome))
-        assert result is None
-        assert outcome.downloaded == 1
-        assert outcome.stored == 0
-        assert outcome.failures == (0 if failure == "unavailable" else 1)
-        if failure in ("selectors", "timeout"):
-            assert (
-                capture.call_args.args[1]
-                == {
-                    "selectors": "topic-page",
-                    "timeout": "download-timeout",
-                }[failure]
-            )
-            assert outcome.failure_details
-        else:
-            capture.assert_not_awaited()
-        return
-    outcome = _one_page(runner, source)
-    assert outcome.failures == 1
+    outcome = SourceOutcome(source=source.name)
+    with runner.repo:
+        result = asyncio.run(runner._download_hit(source, None, _hit("one"), outcome))
+    assert result is None
+    assert outcome.downloaded == 1
     assert outcome.stored == 0
-    assert "could not be parsed" in outcome.failure_details[0]
-    capture.assert_not_awaited()
+    assert outcome.failures == (0 if failure == "unavailable" else 1)
+    assert len(outcome.not_stored_details) == outcome.downloaded - outcome.stored == 1
+    detail = outcome.not_stored_details[0]
+    assert _hit("one").url in detail
+    assert {
+        "unavailable": "Torrent unavailable: removed",
+        "selectors": "Page structure was not recognized: missing download link",
+        "timeout": "Download timed out after retries",
+        "torrent": "Downloaded torrent could not be parsed: bad",
+    }[failure] in detail
+    warning.assert_any_call("Not stored: {}", detail)
+    if failure in ("selectors", "timeout"):
+        assert (
+            capture.call_args.args[1]
+            == {
+                "selectors": "topic-page",
+                "timeout": "download-timeout",
+            }[failure]
+        )
+        assert outcome.failure_details
+    else:
+        capture.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failure", ["session", "network"])
+def test_incomplete_download_attempt_records_reason_before_propagating(
+    run_config: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    from playwright.async_api import Error as PlaywrightError
+
+    from ricercar.log import get_logger
+    from ricercar.sources.base import SessionExpiredError
+
+    error = (
+        SessionExpiredError("login expired") if failure == "session" else PlaywrightError("offline")
+    )
+    monkeypatch.setattr("ricercar.pipeline.call", AsyncMock(side_effect=error))
+    warning = Mock(wraps=get_logger().warning)
+    monkeypatch.setattr(get_logger(), "warning", warning)
+    source = ReplaySource(_settings(), [[_hit("one")]])
+    runner = _runner(run_config, source)
+    outcome = SourceOutcome(source=source.name)
+
+    with runner.repo, pytest.raises(type(error)):
+        asyncio.run(runner._download_hit(source, None, _hit("one"), outcome))
+
+    assert outcome.downloaded == 1
+    assert outcome.stored == 0
+    assert len(outcome.not_stored_details) == 1
+    assert str(error) in outcome.not_stored_details[0]
+    assert _hit("one").url in outcome.not_stored_details[0]
+    warning.assert_any_call("Not stored: {}", outcome.not_stored_details[0])
 
 
 def test_downloads_deduplicate_content_and_fall_back_to_topic_url(
@@ -1277,7 +1355,12 @@ def test_downloads_deduplicate_content_and_fall_back_to_topic_url(
     log_messages: list[str],
 ) -> None:
     from dataclasses import replace
+    from unittest.mock import Mock
 
+    from ricercar.log import get_logger
+
+    warning = Mock(wraps=get_logger().warning)
+    monkeypatch.setattr(get_logger(), "warning", warning)
     meta = parse_file(FIXTURES / "torrents" / "sample.torrent")
     monkeypatch.setattr(
         "ricercar.pipeline.parse_file",
@@ -1289,10 +1372,18 @@ def test_downloads_deduplicate_content_and_fall_back_to_topic_url(
     assert (outcome.downloaded, outcome.stored, outcome.known) == (2, 1, 1)
     with runner.repo:
         assert runner.repo.count() == 1
-        assert runner.repo.stored(_hit("first").url) is not None
+        stored = runner.repo.stored(_hit("first").url)
+        assert stored is not None
         assert runner.repo.stored(_hit("second").url) is None
     assert any("Already stored as" in message for message in log_messages)
     assert any("torrent issue: missing comment" in message for message in log_messages)
+    assert len(outcome.not_stored_details) == outcome.downloaded - outcome.stored == 1
+    detail = outcome.not_stored_details[0]
+    assert _hit("second").url in detail
+    assert _hit("first").url in detail
+    assert stored.add_date in detail
+    assert "duplicate content" in detail
+    warning.assert_any_call("Not stored: {}", detail)
 
 
 class FakeClock:

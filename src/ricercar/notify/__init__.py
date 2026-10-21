@@ -292,6 +292,7 @@ class Notifier:
         interrupted: bool = False,
         failures: int = 0,
         failure_details: Sequence[str] = (),
+        not_stored_details: Sequence[str] = (),
         stale: Sequence[str] = (),
         stale_days: int = 0,
         task_results: dict[str, list[str]] | None = None,
@@ -326,7 +327,7 @@ class Notifier:
         ``ricercar categories refresh`` to update the snapshot after manually adjusting
         the config.
         """
-        head = "Interrupted after" if interrupted else "Downloaded"
+        head = "Interrupted after storing" if interrupted else "Stored"
         lines: list[str] = []
 
         if failures or failure_details:
@@ -382,11 +383,23 @@ class Notifier:
         # ── 3. Source summary ───────────────────────────────────────────
         lines.append(f"## {source}")
         lines.append("")
-        quota = f" / {budget}" if budget else ""
         lines.append(
-            f"**{head} {stored} torrent(s){quota} ({downloaded} downloaded) "
+            f"**{head} {stored} new torrent(s) from {downloaded} download attempt(s) "
             f"during {tasks} task(s), in {elapsed:.0f}s.**"
         )
+        if budget:
+            lines.append(f"**Run limit: at most {budget} new torrent(s) may be stored this run.**")
+        if not_stored_details:
+            lines.extend(
+                [
+                    "",
+                    "### Download Attempts Not Stored",
+                    "",
+                    f"{len(not_stored_details)} attempt(s) did not add a new torrent:",
+                    "",
+                ]
+            )
+            lines.extend(f"- {detail}" for detail in not_stored_details)
         lines.extend(
             _task_review(
                 source,

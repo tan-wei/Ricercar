@@ -245,9 +245,10 @@ class SourceOutcome:
     known: int = 0
     """Rows the database already had (URL) or content it already had (MD5)."""
     downloaded: int = 0
-    """Torrents actually fetched."""
+    """Download attempts, including failures and duplicate content."""
     stored: int = 0
     """New rows written."""
+    not_stored_details: list[str] = field(default_factory=list)
     new_authors: list[str] = field(default_factory=list)
     """Uploader handles seen for the first time this run."""
     category_diff: CategoryDiff | None = None
@@ -272,7 +273,7 @@ class SourceOutcome:
         na = f", {len(self.new_authors)} new uploader(s)" if self.new_authors else ""
         return (
             f"{self.source}: {self.done}/{self.tasks} task(s), {self.stored} stored "
-            f"({self.downloaded} downloaded, {self.known} already known, {self.hits} seen), "
+            f"({self.downloaded} download attempts, {self.known} already known, {self.hits} seen), "
             f"{na}{cats}, {self.failures} failure(s){dead}, "
             f"{self.elapsed:.0f}s"
         )
@@ -538,6 +539,7 @@ class Runner:
                 interrupted=self.shutdown.requested,
                 failures=outcome.failures,
                 failure_details=outcome.failure_details,
+                not_stored_details=outcome.not_stored_details,
                 stale=[stat.description or stat.key for stat in stale],
                 stale_days=self.cfg.run.stale_task_days,
                 task_results=task_results,
@@ -1014,6 +1016,12 @@ class Runner:
         """Fetch, parse and store one torrent. Returns the torrent name when stored."""
         log = get_logger()
         outcome.downloaded += 1
+
+        def not_stored(reason: str) -> None:
+            detail = f"{hit.title} ({hit.url}): {reason}"
+            outcome.not_stored_details.append(detail)
+            log.warning("Not stored: {}", detail)
+
         try:
             info, path = await call(
                 f"torrent {hit.topic_id}",
@@ -1021,15 +1029,15 @@ class Runner:
                 policies=self.policies,
             )
         except TorrentUnavailableError as exc:
-            log.info("Skipping {}: {}", hit.url, exc)
+            not_stored(f"Torrent unavailable: {exc}")
             return None
         except SelectorsBrokenError as exc:
             outcome.failures += 1
             outcome.failure_details.append(
                 f"Torrent topic {hit.topic_id}: page structure was not recognized."
             )
+            not_stored(f"Page structure was not recognized: {'; '.join(exc.issues)}")
             await self.recorder.capture(topic_page, "topic-page", issues=exc.issues, note=hit.url)
-            log.error("{}: the topic page does not look right — {}", hit.url, "; ".join(exc.issues))
             return None
         except PlaywrightTimeout as exc:
             outcome.failures += 1
@@ -1037,9 +1045,12 @@ class Runner:
                 f"Torrent topic {hit.topic_id}: download timed out after retries; "
                 "check network access and the browser session."
             )
+            not_stored(f"Download timed out after retries: {exc}")
             await self.recorder.capture(topic_page, "download-timeout", note=f"{hit.url}: {exc}")
-            log.warning("Giving up on {}: {}", hit.url, exc)
             return None
+        except (SessionExpiredError, PlaywrightError) as exc:
+            not_stored(f"Download did not complete ({type(exc).__name__}): {exc}")
+            raise
 
         try:
             meta = parse_file(path)
@@ -1048,7 +1059,7 @@ class Runner:
             outcome.failure_details.append(
                 f"Torrent topic {hit.topic_id}: the downloaded torrent could not be parsed."
             )
-            log.error("Unreadable torrent from {}: {}", hit.url, exc)
+            not_stored(f"Downloaded torrent could not be parsed: {exc}")
             return None
 
         log.debug("  topic: {} (downloadable={})", info.title[:70], info.downloadable)
@@ -1065,13 +1076,11 @@ class Runner:
             # the answer to "why was this not stored?".
             same = self.repo.stored_content(meta.md5)
             if same is None:  # pragma: no cover - only when another writer won the race
-                log.info("Already stored (same content): {!r}", meta.name)
+                not_stored(f"Already stored (duplicate content): {meta.name!r}")
             else:
-                log.info(
-                    "Already stored as {!r} — added {}: {}",
-                    same.name,
-                    same.add_date,
-                    same.url,
+                not_stored(
+                    f"Already stored as {same.name!r}; added {same.add_date}: "
+                    f"{same.url} (duplicate content)"
                 )
             return None
 
