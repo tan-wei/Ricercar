@@ -78,7 +78,11 @@ def test_a_timeout_is_given_more_room_than_a_hiccup() -> None:
     assert policies.timeout.delay_before_retry(20) == 10.0  # capped by max_delay
 
 
-def test_call_retries_until_the_operation_succeeds() -> None:
+def test_call_retries_until_the_operation_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import Mock
+
+    activity = Mock()
+    monkeypatch.setattr("ricercar.retry.report_activity", activity)
     recorded, fake_sleep = _sleeps()
     calls = 0
 
@@ -94,6 +98,12 @@ def test_call_retries_until_the_operation_succeeds() -> None:
     assert result == "ok"
     assert calls == 3
     assert recorded == [2.0, 4.0]
+    activity.assert_any_call(
+        "Retry backoff: search Bach",
+        wait_seconds=2,
+        issue="search Bach: TimeoutError; retrying in 2.0s (2/3).",
+    )
+    activity.assert_any_call("Retrying: search Bach")
 
 
 def test_call_gives_up_after_the_attempts_it_has() -> None:

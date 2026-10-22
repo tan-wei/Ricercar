@@ -466,6 +466,8 @@ def test_ensure_login_orders_navigation_clearance_and_session_recovery(
 
     page = object()
     calls = Mock()
+    activity = Mock()
+    monkeypatch.setattr(session_module, "report_activity", activity)
     navigate = AsyncMock()
     clearance = AsyncMock(return_value=mode != "cloudflare")
     check = AsyncMock(return_value=mode == "reuse")
@@ -496,6 +498,17 @@ def test_ensure_login_orders_navigation_clearance_and_session_recovery(
     elif mode == "auto":
         manual.assert_not_awaited()
     else:
+        activity.assert_any_call(
+            "Waiting for manual login",
+            wait_seconds=7,
+            issue="Manual login required; sign in and complete any captcha or Cloudflare "
+            "verification in the attached browser.",
+        )
+        if mode != "timeout":
+            activity.assert_any_call(
+                "Signed-in session ready",
+                issue="Manual login completed; the run is continuing.",
+            )
         assert order[-1] == "wait_for_manual_login"
         assert manual.call_args.kwargs["timeout"] == 7
         check.return_value = True

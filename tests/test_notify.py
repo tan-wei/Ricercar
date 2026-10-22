@@ -288,6 +288,88 @@ def test_finish_explains_run_limit_and_every_attempt_not_stored(interrupted: boo
     assert " / 68" not in sent["body"]
 
 
+def test_progress_mail_lists_interval_work_budget_and_issues() -> None:
+    notifier = Notifier()
+    sent = _capture_into(notifier)
+
+    asyncio.run(
+        notifier.run_progress(
+            "rutracker",
+            elapsed=21600,
+            period_elapsed=3600,
+            completed=["Bach", "Mozart"],
+            tasks_done=12,
+            tasks=30,
+            attempted=4,
+            stored=2,
+            stored_total=18,
+            budget=68,
+            torrents=["Cantatas", "Requiem"],
+            not_stored=["Topic B: duplicate content"],
+            issues=["Topic D: download timed out"],
+            phase="Downloading torrents",
+            current_task="Bach",
+            idle_seconds=120,
+        )
+    )
+
+    assert "Running 6.0h" in sent["title"]
+    assert "2 task(s) completed; 4 download attempt(s); 2 new torrent(s) stored" in sent["body"]
+    assert "at most 68 new torrent(s)" in sent["body"]
+    assert "room for 50 more" in sent["body"]
+    for detail in ("Bach", "Mozart", "Cantatas", "Requiem", "duplicate content", "timed out"):
+        assert detail in sent["body"]
+
+
+def test_progress_mail_explains_empty_period_without_claiming_no_available_torrents() -> None:
+    notifier = Notifier()
+    sent = _capture_into(notifier)
+
+    asyncio.run(
+        notifier.run_progress(
+            "rutracker",
+            elapsed=3600,
+            period_elapsed=3600,
+            completed=[],
+            tasks_done=0,
+            tasks=2,
+            attempted=0,
+            stored=0,
+            stored_total=0,
+            budget=5,
+            torrents=[],
+            not_stored=[],
+            issues=[],
+            phase="Waiting for manual login",
+        )
+    )
+
+    assert "0 task(s) completed; 0 download attempt(s)" in sent["body"]
+    assert "Waiting for manual login" in sent["body"]
+    assert sent["body"].count("- None.") == 4
+
+
+def test_run_alert_uses_warning_delivery_type() -> None:
+    from unittest.mock import AsyncMock
+
+    import apprise
+
+    notifier = Notifier()
+    notifier.send = AsyncMock(return_value=True)
+    asyncio.run(
+        notifier.run_alert(
+            "rutracker",
+            alerts=["Complete Cloudflare verification", "Login required"],
+            phase="Waiting for manual login",
+            current_task="Bach",
+            elapsed=7200,
+        )
+    )
+    assert notifier.send.call_args.kwargs["notify_type"] == apprise.NotifyType.WARNING
+    assert "Complete Cloudflare verification" in notifier.send.call_args.args[1]
+    assert "Login required" in notifier.send.call_args.args[1]
+
+
 def test_a_healthy_finish_says_nothing_about_tasks() -> None:
     notifier = Notifier()
     sent = _capture_into(notifier)

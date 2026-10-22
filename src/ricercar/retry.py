@@ -23,6 +23,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from ricercar.config import RetryConfig
 from ricercar.log import get_logger
+from ricercar.notify.progress import report_activity
 from ricercar.sources.base import SiteUnderMaintenanceError
 
 
@@ -132,7 +133,14 @@ async def call[T](
                 attempt + 1,
                 policy.attempts,
             )
+            report_activity(
+                f"Retry backoff: {what}",
+                wait_seconds=delay,
+                issue=f"{what}: {type(exc).__name__}; retrying in {delay:.1f}s "
+                f"({attempt + 1}/{policy.attempts}).",
+            )
             await sleep(delay)
+            report_activity(f"Retrying: {what}")
 
 
 __all__ = ["Policies", "Policy", "call"]

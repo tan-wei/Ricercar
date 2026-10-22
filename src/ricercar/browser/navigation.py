@@ -10,6 +10,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ricercar.log import get_logger
+from ricercar.notify.progress import report_activity
 
 NAVIGATION_TIMEOUT = 30_000
 """Milliseconds to wait for a page to become usable."""
@@ -37,6 +38,7 @@ _CF_CHALLENGE_MARKERS = (
 )
 async def goto(page: Page, url: str) -> Response | None:
     """Navigate to *url*, retrying the transient timeouts the site throws."""
+    report_activity("Opening tracker page")
     return await page.goto(url, wait_until="domcontentloaded")
 
 
@@ -67,15 +69,28 @@ async def wait_for_cloudflare(page: Page, *, timeout: float = CF_WAIT_TIMEOUT) -
     """
     log = get_logger()
     deadline = time.monotonic() + timeout / 1000.0
+    waiting = False
 
     while time.monotonic() < deadline:
         if not await _is_challenge_page(page):
+            if waiting:
+                report_activity("Cloudflare verification cleared")
             return True
+        if not waiting:
+            waiting = True
+            report_activity(
+                "Waiting for Cloudflare verification",
+                wait_seconds=max(deadline - time.monotonic(), 0),
+            )
         remaining = int(deadline - time.monotonic())
         if remaining > 0 and remaining % 5 == 0:
             log.info("Waiting for Cloudflare to clear ({}s left)…", remaining)
         await asyncio.sleep(CF_POLL_INTERVAL)
 
+    report_activity(
+        "Cloudflare verification required",
+        issue="Cloudflare challenge did not clear; complete verification in the attached browser.",
+    )
     return False
 
 

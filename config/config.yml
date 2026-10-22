@@ -42,6 +42,13 @@ schedule:
   interval_minutes: 60
   run_on_start: true
 
+notify:
+  urls: []
+  progress_interval_minutes: 60
+  alerts_enabled: true
+  alert_cooldown_minutes: 30
+  stall_after_minutes: 30
+
 # One section per monitored tracker — listing a source here is what makes it run.
 sources:
   rutracker:

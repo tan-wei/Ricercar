@@ -26,6 +26,7 @@ from playwright.async_api import Page
 from ricercar.browser import MANUAL_LOGIN_TIMEOUT, wait_for_manual_login
 from ricercar.browser.navigation import CF_WAIT_TIMEOUT, goto, wait_for_cloudflare
 from ricercar.log import get_logger
+from ricercar.notify.progress import report_activity
 from ricercar.sources.base import SessionExpiredError
 from ricercar.sources.rutracker.diagnose import CHALLENGE_MARKERS
 from ricercar.sources.rutracker.selectors import DEFAULT_SELECTORS, Selectors
@@ -183,11 +184,14 @@ async def ensure_logged_in(
 
     if await is_logged_in(page, username, selectors):
         log.info("Reusing the browser's signed-in session for '{}'", username)
+        report_activity("Signed-in session ready")
         return
 
     if username and password:
+        report_activity("Signing in automatically")
         outcome = await log_in(page, username, password, selectors=selectors)
         if outcome is LoginOutcome.SIGNED_IN:
+            report_activity("Signed-in session ready")
             return
         log.warning("Signing in automatically did not work: {}", outcome.value)
     else:
@@ -197,12 +201,21 @@ async def ensure_logged_in(
         )
 
     log.warning("Waiting up to {}s for a login in the attached browser…", int(timeout))
+    report_activity(
+        "Waiting for manual login",
+        wait_seconds=timeout,
+        issue="Manual login required; sign in and complete any captcha or Cloudflare "
+        "verification in the attached browser.",
+    )
     if await wait_for_manual_login(
         page,
         lambda current: is_logged_in(current, username, selectors),
         timeout=timeout,
     ):
         log.info("Session for '{}' is live", username)
+        report_activity(
+            "Signed-in session ready", issue="Manual login completed; the run is continuing."
+        )
         return
 
     msg = (

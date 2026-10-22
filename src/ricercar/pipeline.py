@@ -47,6 +47,7 @@ from ricercar.history import TaskHistory, TaskYield, configured_task_keys
 from ricercar.log import get_logger
 from ricercar.models import SearchHit
 from ricercar.notify import Notifier
+from ricercar.notify.progress import ProgressReporter, ProgressSnapshot, report_activity
 from ricercar.parser import TorrentError, parse_file
 from ricercar.progress import new_progress
 from ricercar.repository import TorrentRepository
@@ -103,12 +104,16 @@ async def wait_between_pages(
     """
     started = now()
     deadline = started + delay
+    if delay > 0:
+        report_activity("Waiting between pages", wait_seconds=delay)
     while (remaining := deadline - now()) > 0:
         if stop():
             break
         if on_tick is not None:
             on_tick(remaining)
         await sleep(min(remaining, PAUSE_TICK))
+    if delay > 0:
+        report_activity("Page delay complete")
     return now() - started
 
 
@@ -249,6 +254,8 @@ class SourceOutcome:
     stored: int = 0
     """New rows written."""
     not_stored_details: list[str] = field(default_factory=list)
+    stored_torrents: list[str] = field(default_factory=list)
+    completed_tasks: list[str] = field(default_factory=list)
     new_authors: list[str] = field(default_factory=list)
     """Uploader handles seen for the first time this run."""
     category_diff: CategoryDiff | None = None
@@ -426,6 +433,22 @@ class Runner:
         task_results = outcome.task_results
         outcome.task_status = {plan.key: "not run" for plan in tasks}
         categories_changed: bool = False
+        reporter = ProgressReporter(
+            self.notifier,
+            self.cfg.notify,
+            source.name,
+            tasks=len(tasks),
+            budget=budget,
+            snapshot=lambda: ProgressSnapshot(
+                completed=tuple(outcome.completed_tasks),
+                attempted=outcome.downloaded,
+                stored=outcome.stored,
+                torrents=tuple(outcome.stored_torrents),
+                not_stored=tuple(outcome.not_stored_details),
+                issues=tuple(outcome.failure_details),
+            ),
+        )
+        reporter.start()
         try:
             async with managed_browser(source, self.cfg) as session:
                 # Check whether the forum-section structure has changed.  We ask the
@@ -435,6 +458,7 @@ class Runner:
                 # notifier.
                 check_page = await session.context.new_page()
                 try:
+                    report_activity("Checking category list and login")
                     await call(
                         f"{source.name} categories check",
                         lambda: source.ensure_logged_in(check_page),
@@ -501,6 +525,7 @@ class Runner:
             )
             log.error("{}: {}", source.name, exc)
         finally:
+            await reporter.stop()
             outcome.stale = len(stale)
             outcome.elapsed = time.monotonic() - started
             if outcome.aborted:
@@ -647,6 +672,7 @@ class Runner:
                 stored_before = outcome.stored
                 failures_before = outcome.failures
                 outcome.task_status[plan.key] = "incomplete"
+                report_activity("Starting search", task=plan.label)
                 task_torrents: list[str] = []
                 try:
                     finished, task_torrents = await self._run_task(
@@ -758,6 +784,8 @@ class Runner:
                     counted = run_yields.setdefault(plan.origin, _TaskRun(plan.label))
                     counted.searches += 1
                     outcome.done += 1
+                    outcome.completed_tasks.append(plan.label)
+                    report_activity("Search completed", task=plan.label)
                     self.state.mark_completed(source.name, task)
                     progress.advance(tasks_bar)
                     task_results.setdefault(plan.label, [])
@@ -885,6 +913,7 @@ class Runner:
                 page_index += 1
                 async with self.recorder.chunk(f"{describe_task(task)} — page {page_index}"):
                     try:
+                        report_activity(f"Reading search page {page_index}")
                         results = await pages.__anext__()
                     except StopAsyncIteration:
                         return True, new_hits
@@ -993,6 +1022,7 @@ class Runner:
         delay = source.settings.quota.delay_between_actions
         if delay <= 0:
             return
+        report_activity("Waiting between tracker actions", wait_seconds=delay)
 
         def countdown(left: float) -> None:
             progress.update(bar, description=f"  waiting {math.ceil(left)}s")
@@ -1005,6 +1035,7 @@ class Runner:
             )
         finally:
             progress.update(bar, description="  waiting…")
+            report_activity("Tracker action delay complete")
 
     async def _download_hit(
         self,
@@ -1016,11 +1047,13 @@ class Runner:
         """Fetch, parse and store one torrent. Returns the torrent name when stored."""
         log = get_logger()
         outcome.downloaded += 1
+        report_activity("Downloading torrent")
 
         def not_stored(reason: str) -> None:
             detail = f"{hit.title} ({hit.url}): {reason}"
             outcome.not_stored_details.append(detail)
             log.warning("Not stored: {}", detail)
+            report_activity("Download attempt finished without storage")
 
         try:
             info, path = await call(
@@ -1085,6 +1118,8 @@ class Runner:
             return None
 
         outcome.stored += 1
+        outcome.stored_torrents.append(meta.name)
+        report_activity("Torrent stored")
         log.info(
             "Stored {!r} — {} bytes, {} file(s), md5 {}",
             meta.name,
