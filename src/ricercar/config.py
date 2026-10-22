@@ -326,6 +326,13 @@ class NotifyConfig(BaseModel):
 
     urls: list[str] = Field(default_factory=list)
     """One or more Apprise notification URLs (e.g. slack://, discord://, mailto://...)."""
+    progress_interval_minutes: Annotated[float, Field(ge=0)] = 60
+    """Interval reports during a run; zero disables periodic reports."""
+    alerts_enabled: bool = True
+    alert_cooldown_minutes: Annotated[float, Field(gt=0)] = 30
+    """Minimum interval between exception alerts, shared across all alert reasons."""
+    stall_after_minutes: Annotated[float, Field(ge=0)] = 30
+    """Alert after this long without activity, excluding known waits; zero disables it."""
 
 
 # ── Root settings ──────────────────────────────────────────────────────────

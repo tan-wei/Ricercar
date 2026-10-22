@@ -108,6 +108,24 @@ Everything there is to set, with its default, is documented in [`config/config.e
 - **`schedule`** — the repeat interval and whether a run starts immediately.
 - **`notify`** — the `notify.urls` list (apprise-supported schemes: `mailto://`, `discord://`, `telegram://`, `slack://`, `json://`, …). No URL means notifications are off, not an error.
 
+When notification URLs are configured, there are four types of run messages:
+
+- **Start**: the task list and the maximum number of new torrents that may be stored this run.
+- **Progress**: work since the last successfully delivered progress report, including completed searches, stored torrent names, attempts not stored and their reasons, issues, current activity and remaining quota.
+- **Alert**: rate-limited, combined warnings about manual login or Cloudflare verification, retries, inactivity and recovery.
+- **Finish**: the whole-run summary, including interruptions, download attempts versus new torrents stored, non-storage reasons, per-task results and task review suggestions.
+
+Long runs send a progress report every `notify.progress_interval_minutes` (default 60;
+0 disables it). Each report lists only the work since the last successfully delivered
+report: completed searches, stored torrents, attempts not stored and their reasons,
+issues, the current phase and the remaining run quota. Exception alerts are controlled
+by `notify.alerts_enabled` and share a `notify.alert_cooldown_minutes` interval (default
+30); intervening alerts are combined. `notify.stall_after_minutes` (default 30; 0 disables
+it) detects inactivity outside known rate-limit and retry waits. These defaults live in
+`config/config.yml`; override individual settings in `config/config.local.yml`.
+Reports run independently of search completion, stop when the run ends, and do not
+stop downloads if delivery fails. This is not an external watchdog.
+
 ## Requirements
 
 - Python ≥ 3.12

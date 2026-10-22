@@ -109,6 +109,20 @@ def test_a_later_config_file_wins(extra_config: ExtraConfig) -> None:
     assert second.browser.navigation_timeout == 30_000  # keys nobody overrode survive
 
 
+def test_notify_overrides_preserve_other_notification_defaults(extra_config: ExtraConfig) -> None:
+    extra_config(
+        "notify-defaults.yml",
+        "notify:\n  progress_interval_minutes: 60\n  alert_cooldown_minutes: 30\n"
+        "  alerts_enabled: true\n  stall_after_minutes: 30\n",
+    )
+    settings = extra_config("notify-local.yml", "notify:\n  progress_interval_minutes: 120\n")
+
+    assert settings.notify.progress_interval_minutes == 120
+    assert settings.notify.alert_cooldown_minutes == 30
+    assert settings.notify.alerts_enabled is True
+    assert settings.notify.stall_after_minutes == 30
+
+
 def test_a_later_config_file_replaces_a_list_whole(extra_config: ExtraConfig) -> None:
     extra_config("first.yml", "notify:\n  urls:\n    - slack://token-a/token-b/token-c\n")
     settings = extra_config("second.yml", "notify:\n  urls:\n    - discord://webhook/id\n")

@@ -840,6 +840,92 @@ def test_whole_run_explains_every_download_attempt_not_stored_in_mail_and_warnin
         warning.assert_any_call("Not stored: {}", detail)
 
 
+def test_periodic_mail_arrives_while_a_search_is_still_running(
+    browser_run: tuple[Runner, ReplaySource, Any, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from ricercar.notify.progress import ProgressReporter
+
+    runner, source, send, _ = browser_run
+    source.settings.tasks = []
+    source.settings.must_complete_tasks = [
+        SearchTask(text="Bach", category=1),
+        SearchTask(text="Hold", category=1),
+    ]
+    monkeypatch.setattr(type(runner.notifier), "enabled", property(lambda _self: True))
+    clock = SimpleNamespace(now=0.0)
+    reporters: list[ProgressReporter] = []
+
+    def create(*args: Any, **kwargs: Any) -> ProgressReporter:
+        reporter = ProgressReporter(*args, **kwargs, now=lambda: clock.now)
+        reporters.append(reporter)
+        return reporter
+
+    monkeypatch.setattr("ricercar.pipeline.ProgressReporter", create)
+
+    async def run() -> Any:
+        received = asyncio.Event()
+
+        async def delivered(title: str, _body: str, **_kwargs: Any) -> bool:
+            if "Running" in title:
+                received.set()
+            return True
+
+        async def search(
+            _page: object, task: SearchTask, **_kwargs: Any
+        ) -> AsyncIterator[SearchPage]:
+            if task.text == "Hold":
+                clock.now = 3600
+                reporters[0]._wake.set()
+                await asyncio.wait_for(received.wait(), timeout=2)
+                yield SearchPage(hits=[], number=1)
+            else:
+                yield SearchPage(hits=[_hit("one")], number=1)
+
+        send.side_effect = delivered
+        monkeypatch.setattr(source, "search", search)
+        return await runner.run()
+
+    outcome = asyncio.run(run())
+    assert outcome.stored == 1
+    assert outcome.sources[0].done == 2
+    assert send.await_count == 3
+    body = send.call_args_list[1].args[1]
+    assert "1 task(s) completed; 1 download attempt(s); 1 new torrent(s) stored" in body
+    assert "Current task: Hold" in body
+    assert outcome.sources[0].stored_torrents[0] in body
+    assert reporters[0]._task is None
+
+
+def test_progress_task_is_stopped_when_source_setup_raises(
+    browser_run: tuple[Runner, ReplaySource, Any, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ricercar.notify.progress import ProgressReporter
+
+    runner, _, _, _ = browser_run
+    monkeypatch.setattr(type(runner.notifier), "enabled", property(lambda _self: True))
+    reporters: list[ProgressReporter] = []
+
+    def create(*args: Any, **kwargs: Any) -> ProgressReporter:
+        reporter = ProgressReporter(*args, **kwargs)
+        reporters.append(reporter)
+        return reporter
+
+    async def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise ValueError("unexpected setup error")
+
+    monkeypatch.setattr("ricercar.pipeline.ProgressReporter", create)
+    monkeypatch.setattr(runner, "_prepare", fail)
+    with pytest.raises(ValueError, match="unexpected setup error"):
+        asyncio.run(runner.run())
+    assert len(reporters) == 1
+    assert reporters[0]._task is None
+    assert reporters[0]._token is None
+
+
 def test_partial_category_success_then_login_failure_is_not_reported_as_empty_success(
     browser_run: tuple[Runner, ReplaySource, Any, list[Any]],
     monkeypatch: pytest.MonkeyPatch,

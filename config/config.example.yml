@@ -141,3 +141,7 @@ database:
 
 notify:
   urls: [] # any apprise URL: mailto://, discord://, telegram://, slack://, json://…
+  progress_interval_minutes: 60 # interval-only progress reports; 0 disables them
+  alerts_enabled: true
+  alert_cooldown_minutes: 30 # global minimum interval between exception alerts
+  stall_after_minutes: 30 # ignore known waits; 0 disables inactivity alerts

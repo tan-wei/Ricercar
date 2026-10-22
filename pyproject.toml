@@ -9,7 +9,7 @@ authors = [
 ]
 
 dependencies = [
-    "playwright>=1.40",
+    "playwright>=1.64.0",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "bencode.py>=4.0",
@@ -17,7 +17,7 @@ dependencies = [
     "tenacity>=9.2.1",
     "pyyaml>=6.0",
     "pydantic>=2.14.1",
-    "pydantic-settings>=2.1",
+    "pydantic-settings>=2.16.0",
     "apscheduler>=3.10",
     "rich>=13.0",
     "apprise>=1.7",
@@ -28,9 +28,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
-    "ruff>=0.17.0",
+    "ruff>=0.17.1",
     "mypy>=1.8",
-    "pre-commit>=3.6",
+    "pre-commit>=4.7.0",
 ]
 
 [project.scripts]

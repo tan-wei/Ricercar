@@ -278,6 +278,74 @@ class Notifier:
             f"## {source}\n\n**{len(tasks)} task(s)**\n\n{_listing(tasks, source)}",
         )
 
+    async def run_progress(
+        self,
+        source: str,
+        *,
+        elapsed: float,
+        period_elapsed: float,
+        completed: Sequence[str],
+        tasks_done: int,
+        tasks: int,
+        attempted: int,
+        stored: int,
+        stored_total: int,
+        budget: int,
+        torrents: Sequence[str],
+        not_stored: Sequence[str],
+        issues: Sequence[str],
+        phase: str,
+        current_task: str = "",
+        idle_seconds: float = 0,
+    ) -> bool:
+        """Report only work since the previous successfully delivered interval report."""
+        lines = [
+            f"## {source}: running for {elapsed / 3600:.1f}h",
+            "",
+            f"Current phase: {phase}",
+            f"Current task: {_display_label(current_task, source) if current_task else '(none)'}",
+            f"Last activity: {idle_seconds / 60:.0f} minute(s) ago.",
+            "",
+            f"**This period ({period_elapsed / 60:.0f} min): {len(completed)} task(s) "
+            f"completed; {attempted} download attempt(s); {stored} new torrent(s) stored.**",
+            f"Overall: {tasks_done}/{tasks} task(s) completed; "
+            f"{stored_total} new torrent(s) stored.",
+            f"Run limit: at most {budget} new torrent(s) may be stored this run; "
+            f"room for {max(budget - stored_total, 0)} more.",
+        ]
+        for heading, entries in (
+            ("Tasks Completed This Period", [_display_label(label, source) for label in completed]),
+            ("Torrents Stored This Period", torrents),
+            ("Download Attempts Not Stored This Period", not_stored),
+            ("Issues This Period", issues),
+        ):
+            lines.extend(["", f"### {heading}", ""])
+            lines.extend([f"- {entry}" for entry in entries] or ["- None."])
+        return await self.send(
+            f"[{source}] Running {elapsed / 3600:.1f}h: "
+            f"{tasks_done}/{tasks} tasks, {stored_total} stored",
+            "\n".join(lines),
+            notify_type=apprise.NotifyType.WARNING if issues else apprise.NotifyType.INFO,
+        )
+
+    async def run_alert(
+        self,
+        source: str,
+        *,
+        alerts: Sequence[str],
+        phase: str,
+        current_task: str,
+        elapsed: float,
+    ) -> bool:
+        """Deliver a rate-limited batch of actionable run alerts."""
+        task = _display_label(current_task, source) if current_task else "(none)"
+        return await self.send(
+            f"[{source}] Run status alert after {elapsed / 3600:.1f}h",
+            f"## {source}\n\nCurrent phase: {phase}\n\n"
+            f"Current task: {task}\n\n" + "\n".join(f"- {alert}" for alert in alerts),
+            notify_type=apprise.NotifyType.WARNING,
+        )
+
     async def run_finished(
         self,
         source: str,
