@@ -840,9 +840,11 @@ def test_whole_run_explains_every_download_attempt_not_stored_in_mail_and_warnin
         warning.assert_any_call("Not stored: {}", detail)
 
 
+@pytest.mark.parametrize("text", ["Bach", ""])
 def test_periodic_mail_arrives_while_a_search_is_still_running(
     browser_run: tuple[Runner, ReplaySource, Any, list[Any]],
     monkeypatch: pytest.MonkeyPatch,
+    text: str,
 ) -> None:
     from types import SimpleNamespace
 
@@ -850,10 +852,18 @@ def test_periodic_mail_arrives_while_a_search_is_still_running(
 
     runner, source, send, _ = browser_run
     source.settings.tasks = []
-    source.settings.must_complete_tasks = [
-        SearchTask(text="Bach", category=1),
-        SearchTask(text="Hold", category=1),
-    ]
+    source.settings.must_complete_tasks = [SearchTask(text=text, author="someone")]
+    source.settings.categories = {"First_Section": 1, "Second_Section": 2}
+    monkeypatch.setattr(
+        source,
+        "expand",
+        lambda task: [
+            task.model_copy(update={"category": 1}),
+            task.model_copy(update={"category": 2}),
+        ],
+    )
+    settings = runner.cfg.model_copy(update={"sources": {source.name: source.settings}})
+    monkeypatch.setattr("ricercar.notify.get_settings", lambda: settings)
     monkeypatch.setattr(type(runner.notifier), "enabled", property(lambda _self: True))
     clock = SimpleNamespace(now=0.0)
     reporters: list[ProgressReporter] = []
@@ -876,7 +886,7 @@ def test_periodic_mail_arrives_while_a_search_is_still_running(
         async def search(
             _page: object, task: SearchTask, **_kwargs: Any
         ) -> AsyncIterator[SearchPage]:
-            if task.text == "Hold":
+            if task.category == 2:
                 clock.now = 3600
                 reporters[0]._wake.set()
                 await asyncio.wait_for(received.wait(), timeout=2)
@@ -892,9 +902,17 @@ def test_periodic_mail_arrives_while_a_search_is_still_running(
     assert outcome.stored == 1
     assert outcome.sources[0].done == 2
     assert send.await_count == 3
+    start_body = send.call_args_list[0].args[1]
+    for category in ("First_Section", "Second_Section"):
+        assert f"{text or '(no text)'} [author=someone, category={category}]" in start_body
     body = send.call_args_list[1].args[1]
     assert "1 task(s) completed; 1 download attempt(s); 1 new torrent(s) stored" in body
-    assert "Current task: Hold" in body
+    task_label = f"{text or '(everything)'} by someone"
+    assert f"Current task: {task_label} in category Second_Section" in body
+    assert f"- {task_label} in category First_Section" in body
+    assert "in category 1" not in body
+    assert "in category 2" not in body
+    assert f"### {task_label} (1 torrent(s))" in send.call_args_list[2].args[1]
     assert outcome.sources[0].stored_torrents[0] in body
     assert reporters[0]._task is None
 

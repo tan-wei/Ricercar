@@ -672,7 +672,8 @@ class Runner:
                 stored_before = outcome.stored
                 failures_before = outcome.failures
                 outcome.task_status[plan.key] = "incomplete"
-                report_activity("Starting search", task=plan.label)
+                progress_label = describe_task(task)
+                report_activity("Starting search", task=progress_label)
                 task_torrents: list[str] = []
                 try:
                     finished, task_torrents = await self._run_task(
@@ -784,8 +785,8 @@ class Runner:
                     counted = run_yields.setdefault(plan.origin, _TaskRun(plan.label))
                     counted.searches += 1
                     outcome.done += 1
-                    outcome.completed_tasks.append(plan.label)
-                    report_activity("Search completed", task=plan.label)
+                    outcome.completed_tasks.append(progress_label)
+                    report_activity("Search completed", task=progress_label)
                     self.state.mark_completed(source.name, task)
                     progress.advance(tasks_bar)
                     task_results.setdefault(plan.label, [])

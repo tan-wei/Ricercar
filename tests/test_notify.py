@@ -349,11 +349,13 @@ def test_progress_mail_explains_empty_period_without_claiming_no_available_torre
     assert sent["body"].count("- None.") == 4
 
 
-def test_run_alert_uses_warning_delivery_type() -> None:
+def test_run_alert_uses_warning_delivery_type(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import AsyncMock
 
     import apprise
 
+    settings = Settings(sources={"rutracker": SourceSettings(categories={"Opera_Lossless": 794})})
+    monkeypatch.setattr("ricercar.notify.get_settings", lambda: settings)
     notifier = Notifier()
     notifier.send = AsyncMock(return_value=True)
     asyncio.run(
@@ -361,13 +363,17 @@ def test_run_alert_uses_warning_delivery_type() -> None:
             "rutracker",
             alerts=["Complete Cloudflare verification", "Login required"],
             phase="Waiting for manual login",
-            current_task="Bach",
+            current_task="Bach by someone in category 794",
             elapsed=7200,
         )
     )
     assert notifier.send.call_args.kwargs["notify_type"] == apprise.NotifyType.WARNING
     assert "Complete Cloudflare verification" in notifier.send.call_args.args[1]
     assert "Login required" in notifier.send.call_args.args[1]
+    assert (
+        "Current task: Bach by someone in category Opera_Lossless"
+        in notifier.send.call_args.args[1]
+    )
 
 
 def test_a_healthy_finish_says_nothing_about_tasks() -> None:
