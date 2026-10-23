@@ -25,6 +25,7 @@ class ProgressSnapshot:
     torrents: tuple[str, ...] = ()
     not_stored: tuple[str, ...] = ()
     issues: tuple[str, ...] = ()
+    budget: int | None = None
 
 
 _ACTIVE: ContextVar[ProgressReporter | None] = ContextVar("run_progress", default=None)
@@ -54,6 +55,7 @@ class ProgressReporter:
         tasks: int,
         budget: int,
         snapshot: Callable[[], ProgressSnapshot],
+        run_limit: int | None = None,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         self.notifier = notifier
@@ -61,6 +63,7 @@ class ProgressReporter:
         self.source = source
         self.tasks = tasks
         self.budget = budget
+        self.run_limit = run_limit
         self.snapshot = snapshot
         self.now = now
         self.started = now()
@@ -182,7 +185,8 @@ class ProgressReporter:
                     attempted=state.attempted - self._baseline.attempted,
                     stored=state.stored - self._baseline.stored,
                     stored_total=state.stored,
-                    budget=self.budget,
+                    budget=state.budget if state.budget is not None else self.budget,
+                    run_limit=self.run_limit,
                     torrents=state.torrents[len(self._baseline.torrents) :],
                     not_stored=state.not_stored[len(self._baseline.not_stored) :],
                     issues=tuple(self._issues[self._period_issue_start : issue_end]),

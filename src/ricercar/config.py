@@ -144,7 +144,7 @@ class QuotaConfig(BaseModel):
     """What may be taken from one tracker per day, and how fast it may be taken."""
 
     limit_torrents_one_day: Annotated[int, Field(ge=0)] = 50
-    """Maximum torrents to download per day."""
+    """Maximum new torrents stored per tracker within the last 24 hours."""
 
     delay_between_actions: Annotated[float, Field(ge=0, le=600)] = 1.0
     """Seconds to wait between each automatic action on the tracker.

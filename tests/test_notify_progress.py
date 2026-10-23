@@ -45,6 +45,7 @@ def test_periods_report_only_new_work_and_alerts_do_not_consume_it(reporting: An
         torrents=("Cantatas",),
         not_stored=("duplicate",),
         issues=("download timed out",),
+        budget=50,
     )
     asyncio.run(reporter.poll())
     notifier.run_alert.assert_awaited_once()
@@ -55,12 +56,14 @@ def test_periods_report_only_new_work_and_alerts_do_not_consume_it(reporting: An
     assert first["torrents"] == ("Cantatas",)
     assert first["not_stored"] == ("duplicate",)
     assert first["issues"] == ("download timed out",)
+    assert first["budget"] == 50
     state.snapshot = replace(
         state.snapshot,
         completed=("Bach", "Mozart"),
         attempted=3,
         stored=2,
         torrents=("Cantatas", "Requiem"),
+        budget=68,
     )
     state.now = 7200
     asyncio.run(reporter.poll())
@@ -70,6 +73,7 @@ def test_periods_report_only_new_work_and_alerts_do_not_consume_it(reporting: An
     assert second["attempted"] == second["stored"] == 1
     assert second["not_stored"] == second["issues"] == ()
     assert second["stored_total"] == 2
+    assert second["budget"] == 68
 
 
 @pytest.mark.parametrize(

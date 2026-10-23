@@ -253,6 +253,8 @@ class SourceOutcome:
     """Download attempts, including failures and duplicate content."""
     stored: int = 0
     """New rows written."""
+    budget: int = 0
+    """Estimated cumulative storage allowance at the last quota check."""
     not_stored_details: list[str] = field(default_factory=list)
     stored_torrents: list[str] = field(default_factory=list)
     completed_tasks: list[str] = field(default_factory=list)
@@ -404,6 +406,7 @@ class Runner:
         outcome = SourceOutcome(source=source.name)
 
         budget = self._budget(source)
+        outcome.budget = budget
         tasks = self._tasks_for(source)
         outcome.tasks = len(tasks)
 
@@ -422,12 +425,17 @@ class Runner:
             return outcome
 
         log.info(
-            "{}: {} task(s), room for {} more torrent(s) today",
+            "{}: {} task(s), room for {} more torrent(s)",
             source.name,
             len(tasks),
             budget,
         )
-        await self.notifier.run_started(source.name, [plan.task for plan in tasks], budget=budget)
+        await self.notifier.run_started(
+            source.name,
+            [plan.task for plan in tasks],
+            budget=budget,
+            run_limit=self.limit,
+        )
 
         stale: list[TaskYield] = []
         task_results = outcome.task_results
@@ -439,6 +447,7 @@ class Runner:
             source.name,
             tasks=len(tasks),
             budget=budget,
+            run_limit=self.limit,
             snapshot=lambda: ProgressSnapshot(
                 completed=tuple(outcome.completed_tasks),
                 attempted=outcome.downloaded,
@@ -446,6 +455,7 @@ class Runner:
                 torrents=tuple(outcome.stored_torrents),
                 not_stored=tuple(outcome.not_stored_details),
                 issues=tuple(outcome.failure_details),
+                budget=outcome.budget,
             ),
         )
         reporter.start()
@@ -558,7 +568,8 @@ class Runner:
                 downloaded=outcome.downloaded,
                 stored=outcome.stored,
                 new_authors=outcome.new_authors,
-                budget=budget,
+                budget=outcome.budget,
+                run_limit=self.limit,
                 category_diff=outcome.category_diff,
                 elapsed=outcome.elapsed,
                 interrupted=self.shutdown.requested,
@@ -663,10 +674,23 @@ class Runner:
                         "Interrupted ({}) — stopping after this torrent", self.shutdown.reason
                     )
                     break
-                remaining = budget - outcome.stored
+                remaining = self._budget(source, stored=outcome.stored)
+                outcome.budget = outcome.stored + remaining
+                progress.update(torrents_bar, total=outcome.budget, completed=outcome.stored)
                 if remaining <= 0:
-                    log.info("{}: the daily quota is used up", source.name)
+                    reason = (
+                        "the per-run limit is reached"
+                        if self.limit is not None and outcome.stored >= self.limit
+                        else "the rolling 24-hour quota is used up"
+                    )
+                    log.info("{}: {}", source.name, reason)
                     break
+                log.debug(
+                    "{}: room for {} more torrent(s); {} stored this run",
+                    source.name,
+                    remaining,
+                    outcome.stored,
+                )
 
                 seen_before = outcome.hits
                 stored_before = outcome.stored
@@ -1189,13 +1213,13 @@ class Runner:
 
     # ── Planning helpers ────────────────────────────────────────────────
 
-    def _budget(self, source: Source) -> int:
-        """How many torrents this source may still store today."""
+    def _budget(self, source: Source, *, stored: int = 0) -> int:
+        """Current rolling allowance, capped by what is left of this source's run limit."""
         room = max(
             source.settings.quota.limit_torrents_one_day - self.repo.count_today_from(source.host),
             0,
         )
-        return room if self.limit is None else min(room, self.limit)
+        return room if self.limit is None else min(room, max(self.limit - stored, 0))
 
     def _tasks_for(self, source: Source) -> list[PlannedSearch]:
         """The searches to run for this source, and the task each of them came from.

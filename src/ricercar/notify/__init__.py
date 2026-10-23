@@ -89,6 +89,18 @@ def _listing(tasks: Sequence[SearchTask], source: str = "") -> str:
     return "\n".join(lines) or "- (no tasks configured)"
 
 
+def _quota_summary(budget: int | None, stored: int, run_limit: int | None) -> list[str]:
+    if budget is None:
+        budget = run_limit
+    elif run_limit is not None:
+        budget = min(budget, run_limit)
+    if budget is None:
+        return []
+    return [
+        f"Download allowance: up to {budget} new torrent(s); room for {max(budget - stored, 0)} more."
+    ]
+
+
 def _display_label(label: str, source: str) -> str:
     return re.sub(
         r"\bin category (\d+)\b",
@@ -269,13 +281,16 @@ class Notifier:
         tasks: Sequence[SearchTask],
         *,
         budget: int | None = None,
+        run_limit: int | None = None,
         when: datetime | None = None,
     ) -> bool:
         """Announce a run and what it is about to search for."""
         capacity = f", up to {budget} torrent(s)" if budget is not None else ""
+        quota = _quota_summary(budget, 0, run_limit)
+        details = "\n\n" + "\n".join(quota) if quota else ""
         return await self.send(
             f"[{source}] Going to start {len(tasks)} task(s){capacity} at {_stamp(when)}",
-            f"## {source}\n\n**{len(tasks)} task(s)**\n\n{_listing(tasks, source)}",
+            f"## {source}\n\n**{len(tasks)} task(s)**{details}\n\n{_listing(tasks, source)}",
         )
 
     async def run_progress(
@@ -297,6 +312,7 @@ class Notifier:
         phase: str,
         current_task: str = "",
         idle_seconds: float = 0,
+        run_limit: int | None = None,
     ) -> bool:
         """Report only work since the previous successfully delivered interval report."""
         lines = [
@@ -310,9 +326,8 @@ class Notifier:
             f"completed; {attempted} download attempt(s); {stored} new torrent(s) stored.**",
             f"Overall: {tasks_done}/{tasks} task(s) completed; "
             f"{stored_total} new torrent(s) stored.",
-            f"Run limit: at most {budget} new torrent(s) may be stored this run; "
-            f"room for {max(budget - stored_total, 0)} more.",
         ]
+        lines.extend(_quota_summary(budget, stored_total, run_limit))
         for heading, entries in (
             ("Tasks Completed This Period", [_display_label(label, source) for label in completed]),
             ("Torrents Stored This Period", torrents),
@@ -354,7 +369,8 @@ class Notifier:
         downloaded: int,
         stored: int,
         new_authors: Sequence[str] = (),
-        budget: int = 0,
+        budget: int | None = None,
+        run_limit: int | None = None,
         category_diff: CategoryDiff | None = None,
         elapsed: float = 0.0,
         interrupted: bool = False,
@@ -455,8 +471,7 @@ class Notifier:
             f"**{head} {stored} new torrent(s) from {downloaded} download attempt(s) "
             f"during {tasks} task(s), in {elapsed:.0f}s.**"
         )
-        if budget:
-            lines.append(f"**Run limit: at most {budget} new torrent(s) may be stored this run.**")
+        lines.extend(_quota_summary(budget, stored, run_limit))
         if not_stored_details:
             lines.extend(
                 [

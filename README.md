@@ -110,7 +110,7 @@ Everything there is to set, with its default, is documented in [`config/config.e
 
 When notification URLs are configured, there are four types of run messages:
 
-- **Start**: the task list and the maximum number of new torrents that may be stored this run.
+- **Start**: the task list and the available download allowance.
 - **Progress**: work since the last successfully delivered progress report, including completed searches, stored torrent names, attempts not stored and their reasons, issues, current activity and remaining quota.
 - **Alert**: rate-limited, combined warnings about manual login or Cloudflare verification, retries, inactivity and recovery.
 - **Finish**: the whole-run summary, including interruptions, download attempts versus new torrents stored, non-storage reasons, per-task results and task review suggestions.

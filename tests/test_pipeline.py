@@ -204,7 +204,7 @@ def test_drive_distinguishes_empty_success_from_incomplete_or_failed_searches(
         return result != "partial", []
 
     monkeypatch.setattr(runner, "_run_task", run_task)
-    with new_progress() as progress:
+    with new_progress() as progress, runner.repo:
         _, results = asyncio.run(
             runner._drive(
                 source,
@@ -252,7 +252,7 @@ def test_drive_combines_downloads_from_all_categories(
             side_effect=[(True, ["First torrent"]), (True, ["Second torrent"])],
         ),
     )
-    with new_progress() as progress:
+    with new_progress() as progress, runner.repo:
         _, results = asyncio.run(
             runner._drive(
                 source,
@@ -295,7 +295,7 @@ def test_failed_category_keeps_positive_history_without_successful_run(
         return True, ["Cantatas"]
 
     monkeypatch.setattr(runner, "_run_task", run_task)
-    with new_progress() as progress:
+    with new_progress() as progress, runner.repo:
         asyncio.run(
             runner._drive(
                 source,
@@ -783,6 +783,77 @@ def test_whole_run_searches_stores_notifies_and_persists_without_browser(
     second = asyncio.run(runner.run())
     assert second.sources[0].skipped == "no tasks to run"
     assert send.await_count == 2
+
+
+@pytest.mark.parametrize(
+    ("limit", "expire_previous", "expected"),
+    [(None, True, 2), (1, True, 1), (2, True, 2), (None, False, 1), (2, False, 1)],
+)
+def test_task_start_rechecks_rolling_quota_without_resetting_run_limit(
+    browser_run: tuple[Runner, ReplaySource, Any, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    limit: int | None,
+    expire_previous: bool,
+    expected: int,
+) -> None:
+    import sqlite3
+    from unittest.mock import Mock
+
+    runner, source, send, _ = browser_run
+    runner.limit = limit
+    source.settings.quota.limit_torrents_one_day = 2
+    source.settings.tasks = []
+    source.settings.must_complete_tasks = [
+        SearchTask(text=name, category=1) for name in ("First", "Second")
+    ]
+    previous_url = "https://fake.example/viewtopic.php?t=previous"
+    with TorrentRepository(runner.cfg.db_path) as repo:
+        repo.add(_meta(previous_url, "a" * 32), b"previous")
+    with sqlite3.connect(runner.cfg.db_path) as connection:
+        connection.execute(
+            "UPDATE url_table SET add_date = datetime('now','localtime','-23 hours') WHERE url = ?",
+            (previous_url,),
+        )
+    allowances: list[int] = []
+    queries = Mock(wraps=runner.repo.count_today_from)
+    monkeypatch.setattr(runner.repo, "count_today_from", queries)
+
+    async def run_task(
+        _source: Any,
+        plan: Any,
+        _results: Any,
+        _topic: Any,
+        budget: int,
+        outcome: SourceOutcome,
+        *_args: Any,
+    ) -> tuple[bool, list[str]]:
+        allowances.append(budget)
+        name = plan.task.text
+        meta = _meta(f"https://fake.example/viewtopic.php?t={name}", str(len(allowances)) * 32)
+        assert runner.repo.add(meta, name.encode())
+        outcome.stored += 1
+        if expire_previous:
+            runner.repo._db.execute(
+                "UPDATE url_table SET add_date = datetime('now','localtime','-25 hours') "
+                "WHERE url = ?",
+                (previous_url,),
+            )
+            runner.repo._db.commit()
+        return True, [name]
+
+    monkeypatch.setattr(runner, "_run_task", run_task)
+
+    outcome = asyncio.run(runner.run())
+
+    assert outcome.stored == expected
+    assert outcome.sources[0].done == expected
+    assert allowances == [1] * expected
+    assert queries.call_count == 3
+    assert outcome.sources[0].budget == expected
+    assert (
+        f"Download allowance: up to {expected} new torrent(s); room for 0 more."
+        in send.call_args_list[-1].args[1]
+    )
 
 
 @pytest.mark.parametrize(("limit", "expected"), [(None, 4), (2, 2), (20, 4)])

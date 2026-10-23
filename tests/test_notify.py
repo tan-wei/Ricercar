@@ -214,6 +214,8 @@ def test_start_notification_title_includes_available_download_budget(budget: int
         assert "up to" not in sent["title"]
     else:
         assert f", up to {budget} torrent(s) at " in sent["title"]
+        assert "rolling 24-hour" not in sent["body"]
+        assert "task start" not in sent["body"]
 
 
 def test_a_finish_notification_names_the_tasks_worth_removing() -> None:
@@ -279,7 +281,8 @@ def test_finish_explains_run_limit_and_every_attempt_not_stored(interrupted: boo
 
     head = "Interrupted after storing" if interrupted else "Stored"
     assert f"{head} 2 new torrent(s) from 4 download attempt(s)" in sent["body"]
-    assert "Run limit: at most 68 new torrent(s) may be stored this run." in sent["body"]
+    assert "Download allowance: up to 68 new torrent(s); room for 66 more." in sent["body"]
+    assert "quota check" not in sent["body"]
     assert "### Download Attempts Not Stored" in sent["body"]
     assert "2 attempt(s) did not add a new torrent" in sent["body"]
     for detail in details:
@@ -315,8 +318,7 @@ def test_progress_mail_lists_interval_work_budget_and_issues() -> None:
 
     assert "Running 6.0h" in sent["title"]
     assert "2 task(s) completed; 4 download attempt(s); 2 new torrent(s) stored" in sent["body"]
-    assert "at most 68 new torrent(s)" in sent["body"]
-    assert "room for 50 more" in sent["body"]
+    assert "Download allowance: up to 68 new torrent(s); room for 50 more." in sent["body"]
     for detail in ("Bach", "Mozart", "Cantatas", "Requiem", "duplicate content", "timed out"):
         assert detail in sent["body"]
 
