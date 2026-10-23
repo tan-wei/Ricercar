@@ -97,7 +97,8 @@ def _quota_summary(budget: int | None, stored: int, run_limit: int | None) -> li
     if budget is None:
         return []
     return [
-        f"Download allowance: up to {budget} new torrent(s); room for {max(budget - stored, 0)} more."
+        f"Download allowance: up to {budget} new torrent(s); "
+        f"room for {max(budget - stored, 0)} more."
     ]
 
 
