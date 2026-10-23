@@ -105,6 +105,42 @@ def test_many_tasks_do_not_grow_the_status_file_without_bound(
     assert all(key.startswith("text=task") for key in completed)
 
 
+@pytest.mark.parametrize("days_ago", [0, 1])
+def test_loaded_allocations_drop_completed_tasks_before_pruning_dates(
+    file: Path, days_ago: int
+) -> None:
+    completed = task_key(SearchTask(text="completed"))
+    pending = task_key(SearchTask(text="pending"))
+    stamp = (datetime.now() - timedelta(days=days_ago)).isoformat(timespec="seconds")
+    file.write_text(
+        json.dumps(
+            {
+                "version": STATE_VERSION,
+                "sources": {
+                    "rutracker": {
+                        "allocated": [completed, pending],
+                        "completed": {completed: stamp},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = StateStore(file)
+    assert store.source("rutracker").allocated == {pending}
+    assert store.completed_today("rutracker") == ({completed} if days_ago == 0 else set())
+    store.save()
+    assert StateStore(file).source("rutracker").allocated == {pending}
+
+
+def test_completed_tasks_leave_the_pending_allocation(store: StateStore) -> None:
+    completed = SearchTask(text="completed")
+    pending = SearchTask(text="pending")
+    store.mark_allocated("rutracker", {task_key(completed), task_key(pending)})
+    store.mark_completed("rutracker", completed)
+    assert store.source("rutracker").allocated == {task_key(pending)}
+
+
 def test_the_state_survives_a_restart(store: StateStore, file: Path) -> None:
     task = SearchTask(text="Bach")
     store.remember_authors("rutracker", ["a"])

@@ -1229,7 +1229,7 @@ class Runner:
         and the quota then count. Tasks finished earlier today are dropped when resuming,
         which is what makes an interrupted run pick up where it stopped.
 
-        When resuming, **only** the tasks that were allocated earlier today but not yet
+        When resuming, **only** the tasks that were allocated earlier but not yet
         completed are run — no new tasks (not even ``must_complete``) are added, so the
         set of pending work shrinks monotonically instead of accumulating across runs.
         Only when there is *nothing* unfinished does normal sampling kick in.

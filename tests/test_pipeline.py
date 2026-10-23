@@ -11,7 +11,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Callable
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -129,6 +129,30 @@ def test_resumed_searches_keep_their_configured_history_key(
     plans = _plans(runner, source)
     assert {plan.origin for plan in plans} == {task_key(task)}
     assert {plan.label for plan in plans} == {describe_task(task)}
+
+
+@pytest.mark.parametrize("days_ago", [0, 1])
+def test_resume_keeps_only_unfinished_work(
+    run_config: Settings, monkeypatch: pytest.MonkeyPatch, days_ago: int
+) -> None:
+    previous = datetime.now() - timedelta(days=days_ago)
+    current_day = [previous.date().isoformat()]
+    monkeypatch.setattr("ricercar.state.today", lambda: current_day[0])
+    completed = SearchTask(text="completed yesterday")
+    pending = SearchTask(text="still pending")
+    fresh = SearchTask(text="newly configured")
+    source = FakeSource(_settings(tasks=[fresh], must_complete_tasks=[fresh]))
+    runner = _runner(run_config, source)
+    runner.state.mark_allocated(source.name, {task_key(completed), task_key(pending)})
+    runner.state.mark_completed(source.name, completed, when=previous)
+
+    current_day[0] = date.today().isoformat()
+    restarted = _runner(run_config, source)
+    assert _tasks(restarted, source) == [pending]
+    restarted.state.save()
+    assert _tasks(_runner(run_config, source), source) == [pending]
+    restarted.state.mark_completed(source.name, pending)
+    assert _tasks(_runner(run_config, source), source) == [fresh]
 
 
 @pytest.mark.parametrize("second", ["not run", "failed", "completed"])

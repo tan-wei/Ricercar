@@ -46,7 +46,7 @@ class SourceState:
     completed: dict[str, str] = field(default_factory=dict)
     """Task key → ISO timestamp of the run that finished it."""
     allocated: set[str] = field(default_factory=set)
-    """Task keys allocated so far today, for resume-sequential logic."""
+    """Allocated task keys still awaiting completion, including work from earlier days."""
     last_run: str | None = None
     """ISO timestamp of the last run against this source."""
 
@@ -57,13 +57,12 @@ class SourceState:
     def keep_only(self, day: str) -> None:
         """Forget the tasks finished on any other day.
 
-        Only today's matter — the resume filter asks nothing else — and a run can finish
-        thousands of searches (every uploader in every configured section), so keeping
-        the whole history would grow the file without ever being read.
+        Completed allocations must be removed before their timestamps are discarded,
+        so they cannot become pending again on the next day. Only today's completion
+        timestamps are needed to avoid repeating tasks during fresh allocations.
         """
+        self.allocated.difference_update(self.completed)
         self.completed = {key: stamp for key, stamp in self.completed.items() if stamp[:10] == day}
-        # Also prune allocated — a new day means a fresh allocation.
-        self.allocated = set() if not day else self.allocated
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -161,7 +160,9 @@ class StateStore:
     def source(self, name: str) -> SourceState:
         """The state of one source, created empty on first use."""
         self.load()
-        return self._sources.setdefault(name, SourceState())
+        state = self._sources.setdefault(name, SourceState())
+        state.keep_only(today())
+        return state
 
     def known_authors(self, name: str) -> set[str]:
         """The uploaders already seen for *name*."""
