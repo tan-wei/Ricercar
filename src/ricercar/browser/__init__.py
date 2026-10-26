@@ -48,6 +48,7 @@ import urllib.request
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from playwright.async_api import (
@@ -66,13 +67,19 @@ if TYPE_CHECKING:
     from ricercar.sources.base import Source
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class BrowserSession:
     """A browser ready to be driven, plus the driver that owns it."""
 
     playwright: Playwright
     browser: Browser
     context: BrowserContext
+
+    async def reconnect(self, connect_url: str, cfg: Settings) -> None:
+        """Recycle CDP artifacts through Playwright without closing the user's browser."""
+        await self.browser.close()
+        self.browser = await _attach(self.playwright, connect_url)
+        self.context = _configured_context(self.browser, cfg)
 
 
 # ── Public API ────────────────────────────────────────────────────────────
@@ -85,8 +92,8 @@ async def managed_browser(
 ) -> AsyncIterator[BrowserSession]:
     """Attach to the browser *source* is configured to use.
 
-    The browser belongs to the user: it is reused as-is and never closed, only the
-    Playwright driver is stopped. The endpoint is per source, so two trackers can
+    The browser belongs to the user: closing the CDP connection only disconnects
+    Playwright and reclaims its artifacts. The endpoint is per source, so two trackers can
     be driven in the same browser (or in two different ones) without the
     application deciding anything.
 
@@ -98,23 +105,53 @@ async def managed_browser(
     """
     cfg = cfg or get_settings()
 
-    pw = await async_playwright().start()
+    pw = await _start_playwright(cfg)
+    browser: Browser | None = None
+    session: BrowserSession | None = None
     try:
         browser = await _attach(pw, source.settings.connect_url)
 
         # Reusing the existing context is the whole point: a fresh context would be
         # logged out, and the login POST is blocked on the trackers that need this.
-        if not browser.contexts:
-            msg = "The attached browser has no open context — open a tab in it and retry."
-            raise RuntimeError(msg)
-
-        context = browser.contexts[0]
-        context.set_default_timeout(cfg.browser.action_timeout)
-        context.set_default_navigation_timeout(cfg.browser.navigation_timeout)
-
-        yield BrowserSession(playwright=pw, browser=browser, context=context)
+        context = _configured_context(browser, cfg)
+        session = BrowserSession(playwright=pw, browser=browser, context=context)
+        yield session
     finally:
-        await pw.stop()
+        try:
+            if session is not None:
+                await session.browser.close()
+            elif browser is not None:
+                await browser.close()
+        finally:
+            await pw.stop()
+
+
+def _configured_context(browser: Browser, cfg: Settings) -> BrowserContext:
+    if not browser.contexts:
+        msg = "The attached browser has no open context — open a tab in it and retry."
+        raise RuntimeError(msg)
+    context = browser.contexts[0]
+    context.set_default_timeout(cfg.browser.action_timeout)
+    context.set_default_navigation_timeout(cfg.browser.navigation_timeout)
+    return context
+
+
+async def _start_playwright(cfg: Settings | None = None) -> Playwright:
+    cfg = cfg or get_settings()
+    root = Path(cfg.browser.temp_dir).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    variables = ("TMPDIR", "TEMP", "TMP")
+    previous = {name: os.environ.get(name) for name in variables}
+    try:
+        for name in variables:
+            os.environ[name] = str(root)
+        return await async_playwright().start()
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 async def _attach(pw: Playwright, connect_url: str) -> Browser:
@@ -200,7 +237,8 @@ async def close_attached(
 
 async def _close_over_cdp(connect_url: str) -> int | None:
     """Send ``Browser.close`` and return the browser's own pid (when it says)."""
-    pw = await async_playwright().start()
+    pw = await _start_playwright()
+    browser: Browser | None = None
     try:
         browser = await pw.chromium.connect_over_cdp(connect_url)
         session = await browser.new_browser_cdp_session()
@@ -219,7 +257,11 @@ async def _close_over_cdp(connect_url: str) -> int | None:
         get_logger().debug("Could not ask the browser to close: {}", exc)
         return None
     finally:
-        await pw.stop()
+        try:
+            if browser is not None:
+                await browser.close()
+        finally:
+            await pw.stop()
 
 
 async def _wait_until_gone(connect_url: str, *, timeout: float) -> bool:

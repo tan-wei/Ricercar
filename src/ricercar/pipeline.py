@@ -664,6 +664,8 @@ class Runner:
         failures_in_a_row = 0
         run_yields: dict[str, _TaskRun] = {}
         task_results = outcome.task_results
+        connected_at = time.monotonic()
+        rotation_seconds = self.cfg.browser.artifact_rotation_hours * 3600
         try:
             await self._prepare(source, session, results_page, topic_page)
 
@@ -691,6 +693,17 @@ class Runner:
                     remaining,
                     outcome.stored,
                 )
+
+                if time.monotonic() - connected_at >= rotation_seconds:
+                    report_activity("Recycling browser temporary artifacts")
+                    await self.recorder.stop()
+                    await results_page.close()
+                    await topic_page.close()
+                    await session.reconnect(source.settings.connect_url, self.cfg)
+                    connected_at = time.monotonic()
+                    results_page = await session.context.new_page()
+                    topic_page = await session.context.new_page()
+                    await self._prepare(source, session, results_page, topic_page)
 
                 seen_before = outcome.hits
                 stored_before = outcome.stored

@@ -76,6 +76,8 @@ def test_run_defaults() -> None:
 
     assert DiagnosticsConfig().save_traces is True
     assert BrowserConfig().navigation_timeout == 30_000
+    assert BrowserConfig().temp_dir == str(config.DATA_DIR / "playwright")
+    assert BrowserConfig().artifact_rotation_hours == 24
     assert RetryConfig().max_attempts == 3
 
 
@@ -88,6 +90,10 @@ def test_out_of_range_values_are_rejected() -> None:
         RetryConfig(max_attempts=99)
     with pytest.raises(ValidationError):
         BrowserConfig(navigation_timeout=1_000)
+    with pytest.raises(ValidationError):
+        BrowserConfig(artifact_rotation_hours=0)
+    with pytest.raises(ValidationError):
+        BrowserConfig(artifact_rotation_hours=-1)
     with pytest.raises(ValidationError):
         ScheduleConfig(interval_minutes=0)
     # a threshold of zero would report every task as dead the moment it first ran

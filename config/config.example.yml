@@ -19,6 +19,8 @@ browser:
   navigation_timeout: 30000 # ms a page load may take
   action_timeout: 15000 # ms a click or a fill may take
   downloads_dir: data/torrents
+  temp_dir: data/playwright # Playwright-managed temporary artifacts, not the browser profile
+  artifact_rotation_hours: 24 # reconnect between tasks; Playwright reclaims old artifacts
   close_on_exit: true # a graceful close — the profile keeps the signed-in session
 
 run:

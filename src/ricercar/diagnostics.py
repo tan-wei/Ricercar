@@ -12,9 +12,9 @@ failure writes what the browser actually had in front of it into
 * ``failure.json`` — URL, title, the reason, the issues the source reported, and
   anything the caller wanted to add.
 
-Traces are recorded in *chunks*: a chunk that ends well is discarded, and only the
-chunk containing a failure is kept. A long healthy run therefore does not pile up
-trace files nobody will ever open.
+Traces are recorded in *chunks*: only the chunk containing a failure is exported.
+Playwright retains raw recording resources until the CDP connection is disconnected;
+the browser layer and pipeline rotate that connection to reclaim temporary artifacts.
 """
 
 from __future__ import annotations

@@ -10,7 +10,9 @@ back.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
+from pathlib import Path
 from textwrap import dedent
 from types import SimpleNamespace
 from typing import Any
@@ -159,6 +161,7 @@ def browser_backend(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, Any]:
     driver = MagicMock()
     driver.stop = AsyncMock()
     browser = MagicMock()
+    browser.close = AsyncMock()
     browser.contexts = [Mock()]
     driver.chromium.connect_over_cdp = AsyncMock(return_value=browser)
     session = MagicMock()
@@ -213,7 +216,64 @@ def test_managed_browser_reuses_context_and_always_stops_driver(
     driver.stop.assert_awaited_once()
     driver.chromium.launch.assert_not_called()
     browser.new_context.assert_not_called()
-    browser.close.assert_not_called()
+    assert browser.close.await_count == (0 if failure == "connection" else 1)
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_driver_inherits_project_temp_directory_and_restores_environment(
+    browser_backend: tuple[Any, Any, Any],
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fails: bool,
+) -> None:
+    settings.browser.temp_dir = str(tmp_path / "playwright")
+    monkeypatch.setenv("TEMP", "original-temp")
+    monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.setenv("TMP", "original-tmp")
+    before = {key: os.environ.get(key) for key in ("TMPDIR", "TEMP", "TMP")}
+    driver, _, _ = browser_backend
+
+    async def start() -> Any:
+        assert Path(settings.browser.temp_dir).is_dir()
+        for key in before:
+            assert os.environ[key] == str(Path(settings.browser.temp_dir).resolve())
+        if fails:
+            raise RuntimeError("driver failed")
+        return driver
+
+    manager = Mock()
+    manager.start = AsyncMock(side_effect=start)
+    monkeypatch.setattr(browser_module, "async_playwright", lambda: manager)
+    if fails:
+        with pytest.raises(RuntimeError, match="driver failed"):
+            asyncio.run(browser_module._start_playwright(settings))
+    else:
+        assert asyncio.run(browser_module._start_playwright(settings)) is driver
+    assert {key: os.environ.get(key) for key in before} == before
+
+
+def test_reconnect_reuses_driver_and_releases_both_connections(
+    browser_backend: tuple[Any, Any, Any], settings: Settings
+) -> None:
+    driver, first, _ = browser_backend
+    second = MagicMock()
+    second.close = AsyncMock()
+    second.contexts = [Mock()]
+    driver.chromium.connect_over_cdp.side_effect = [first, second]
+    source = SecondSource(SourceSettings(connect_url=ENDPOINT))
+
+    async def use() -> None:
+        async with browser_module.managed_browser(source, settings) as session:
+            await session.reconnect(ENDPOINT, settings)
+            first.close.assert_awaited_once()
+            assert session.browser is second
+            assert session.context is second.contexts[0]
+
+    asyncio.run(use())
+    second.close.assert_awaited_once()
+    driver.stop.assert_awaited_once()
+    second.contexts[0].set_default_timeout.assert_called_once_with(settings.browser.action_timeout)
 
 
 @pytest.mark.parametrize(

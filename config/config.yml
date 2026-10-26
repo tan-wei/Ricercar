@@ -6,6 +6,8 @@ browser:
   # by hand (see the "Cloudflare" section in README.md).
   navigation_timeout: 30000
   action_timeout: 15000
+  temp_dir: data/playwright
+  artifact_rotation_hours: 24
   # downloads_dir defaults to data/torrents
   #
   # close_on_exit (default true) closes that browser again when a command finishes. The

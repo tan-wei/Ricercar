@@ -783,6 +783,63 @@ def browser_run(
     return runner, source, send, pages
 
 
+@pytest.mark.parametrize("elapsed_hours", [0.5, 1.0, 2.0])
+def test_temporary_artifacts_rotate_only_between_tasks_after_configured_interval(
+    browser_run: tuple[Runner, ReplaySource, Any, list[Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    elapsed_hours: float,
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    runner, source, _, pages = browser_run
+    runner.cfg.browser.artifact_rotation_hours = 1
+    source.settings.tasks.append(SearchTask(text="Mozart", category=1))
+    source.settings.random_choice = 2
+    source.pages = [[]]
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr("ricercar.pipeline.time", SimpleNamespace(monotonic=lambda: clock.now))
+    original_run_task = runner._run_task
+    session = MagicMock()
+    session.context.new_page = AsyncMock(side_effect=pages)
+    session.reconnect = AsyncMock()
+    replacement_pages = [AsyncMock(), AsyncMock()]
+
+    async def reconnect(*_args: object) -> None:
+        runner.recorder.stop.assert_awaited_once()
+        for page in pages[1:]:
+            page.close.assert_awaited_once()
+        session.context.new_page = AsyncMock(side_effect=replacement_pages)
+
+    session.reconnect.side_effect = reconnect
+    manager = MagicMock()
+    manager.__aenter__.return_value = session
+    monkeypatch.setattr("ricercar.pipeline.managed_browser", lambda *_args: manager)
+    monkeypatch.setattr(runner.recorder, "stop", AsyncMock())
+
+    async def run_task(*args: Any, **kwargs: Any) -> Any:
+        result = await original_run_task(*args, **kwargs)
+        clock.now += elapsed_hours * 3600
+        return result
+
+    monkeypatch.setattr(runner, "_run_task", run_task)
+    outcome = asyncio.run(runner.run()).sources[0]
+    assert outcome.done == 2
+    assert outcome.failures == 0
+    if elapsed_hours >= 1:
+        session.reconnect.assert_awaited_once_with(source.settings.connect_url, runner.cfg)
+        assert runner.recorder.start.await_count == 2
+        assert runner.recorder.stop.await_count == 2
+        for page in replacement_pages:
+            page.close.assert_awaited_once()
+        assert source.calls[0][0] is pages[1]
+        assert source.calls[1][0] is replacement_pages[0]
+    else:
+        session.reconnect.assert_not_awaited()
+        assert runner.recorder.start.await_count == 1
+        assert runner.recorder.stop.await_count == 1
+
+
 def test_whole_run_searches_stores_notifies_and_persists_without_browser(
     browser_run: tuple[Runner, ReplaySource, Any, list[Any]],
 ) -> None:

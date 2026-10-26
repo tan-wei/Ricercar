@@ -99,6 +99,12 @@ class BrowserConfig(BaseModel):
     """Timeout in ms for individual actions (click, fill, etc.)."""
     downloads_dir: str = str(DATA_DIR / "torrents")
     """Where downloaded .torrent files land."""
+    temp_dir: str = str(DATA_DIR / "playwright")
+    """Parent of Playwright-managed temporary artifact and tracing directories."""
+    artifact_rotation_hours: Annotated[float, Field(gt=0)] = 24
+    """Reconnect at a task boundary after this many hours to reclaim temporary artifacts.
+    Exported failure evidence is not removed; an active task may exceed this interval.
+    """
     close_on_exit: bool = True
     """Close the attached browser when the command finishes.
 

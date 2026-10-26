@@ -108,6 +108,20 @@ Everything there is to set, with its default, is documented in [`config/config.e
 - **`schedule`** — the repeat interval and whether a run starts immediately.
 - **`notify`** — the `notify.urls` list (apprise-supported schemes: `mailto://`, `discord://`, `telegram://`, `slack://`, `json://`, …). No URL means notifications are off, not an error.
 
+Playwright's temporary artifacts (including raw tracing resources) live under
+`browser.temp_dir`, default `data/playwright`, instead of the system Temp directory.
+Playwright reclaims them when the CDP connection is explicitly disconnected at the end
+of a run. During long runs, `browser.artifact_rotation_hours` (default 24) also triggers
+a disconnect/reconnect between search tasks. An active task is never interrupted, so
+the interval is not a strict disk-size or file-age limit. Reconnecting leaves the user's
+browser and signed-in profile running.
+
+Only Playwright's own cleanup is used: Ricercar does not scan or delete temporary
+directories. Force-killing the process can therefore leave artifacts behind, and old
+directories already in the system Temp folder are not migrated or removed. Exported
+failure evidence under `diagnostics.failures_dir` is kept separately and has no automatic
+expiry. Set `diagnostics.save_traces: false` to avoid recording tracing resources.
+
 When notification URLs are configured, there are four types of run messages:
 
 - **Start**: the task list and the available download allowance.
