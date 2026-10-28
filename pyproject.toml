@@ -20,7 +20,7 @@ dependencies = [
     "pydantic-settings>=2.16.0",
     "apscheduler>=3.10",
     "rich>=13.0",
-    "apprise>=1.7",
+    "apprise>=2.1.0",
     "ruamel-yaml>=0.19.1",
 ]
 
