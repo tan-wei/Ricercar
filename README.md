@@ -65,6 +65,7 @@ The important seam is the [`Source` protocol](src/ricercar/sources/base.py) — 
 
 - On `--once`, the pipeline runs each configured source once: take the mandatory tasks plus a random sample of the rest, search each, skip what the database already knows (by URL *and* content MD5), download what is new, and stop at the daily quota.
 - Failures are *graded* rather than retried blindly: a timeout is retried with exponential back-off, an expired session triggers a re-login, and a page whose selectors no longer match is **saved** (HTML, screenshot, trace) and the task skipped.
+- A problem with **one torrent** — no download link, an unusable topic page, a download timeout, a file that will not parse — is recorded as "not stored" and does not fail the search that found it. The task still completes, so one permanently unavailable topic cannot keep a task pending forever. Session, challenge, maintenance and search-page failures remain task-level failures.
 - An interrupt (`Ctrl-C`, `SIGTERM`) finishes the torrent in hand, saves state, and stops — the next run resumes where it stopped. A second interrupt leaves the schedule.
 
 ### The library layout

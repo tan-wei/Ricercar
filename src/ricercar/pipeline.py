@@ -263,6 +263,10 @@ class SourceOutcome:
     category_diff: CategoryDiff | None = None
     """Set when the live category list diverges from the bundled snapshot."""
     failures: int = 0
+    """Task-level failures: a search page, session or browser that could not be used.
+    A single torrent that could not be stored is reported in ``not_stored_details``
+    instead, and does not make the task failed or keep it pending.
+    """
     failure_details: list[str] = field(default_factory=list)
     task_status: dict[str, str] = field(default_factory=dict)
     task_results: dict[str, list[str]] = field(default_factory=dict)
@@ -707,7 +711,6 @@ class Runner:
 
                 seen_before = outcome.hits
                 stored_before = outcome.stored
-                failures_before = outcome.failures
                 outcome.task_status[plan.key] = "incomplete"
                 progress_label = describe_task(task)
                 report_activity("Starting search", task=progress_label)
@@ -805,9 +808,6 @@ class Runner:
                         observed = run_yields.setdefault(plan.origin, _TaskRun(plan.label))
                         observed.hits += outcome.hits - seen_before
                         observed.stored += outcome.stored - stored_before
-                    if outcome.failures > failures_before:
-                        outcome.task_status[plan.key] = "failed"
-                        continue
                     if not finished:
                         log.warning(
                             "{}: {} was cut short — it stays on the list for the next run",
@@ -923,6 +923,10 @@ class Runner:
         A task cut short by an interrupt or by the quota is *not* finished, so it is not
         recorded in the state and the next run repeats it — cheaply, because what was
         already stored is skipped by URL.
+
+        A torrent that cannot be fetched or parsed is recorded as *not stored* and does
+        not fail the task: the search itself succeeded, and one unusable topic is not a
+        reason to keep the whole search pending for the next run.
 
         Raises:
             SelectorsBrokenError: the results page is not what the source expects.
@@ -1082,7 +1086,18 @@ class Runner:
         hit: SearchHit,
         outcome: SourceOutcome,
     ) -> str | None:
-        """Fetch, parse and store one torrent. Returns the torrent name when stored."""
+        """Fetch, parse and store one torrent. Returns the torrent name when stored.
+
+        A problem with this one torrent — unavailable, an unrecognised topic page, a
+        download timeout, an unparseable file — is recorded in ``not_stored_details``
+        and does not count as a run failure. It says nothing about the search that
+        found the topic, so the task is allowed to complete.
+
+        Raises:
+            SessionExpiredError: the topic page shows a login form or a challenge, so
+                the search must sign in again before trying again.
+            PlaywrightError: a browser/network fault worth retrying at task level.
+        """
         log = get_logger()
         outcome.downloaded += 1
         report_activity("Downloading torrent")
@@ -1103,19 +1118,10 @@ class Runner:
             not_stored(f"Torrent unavailable: {exc}")
             return None
         except SelectorsBrokenError as exc:
-            outcome.failures += 1
-            outcome.failure_details.append(
-                f"Torrent topic {hit.topic_id}: page structure was not recognized."
-            )
             not_stored(f"Page structure was not recognized: {'; '.join(exc.issues)}")
             await self.recorder.capture(topic_page, "topic-page", issues=exc.issues, note=hit.url)
             return None
         except PlaywrightTimeout as exc:
-            outcome.failures += 1
-            outcome.failure_details.append(
-                f"Torrent topic {hit.topic_id}: download timed out after retries; "
-                "check network access and the browser session."
-            )
             not_stored(f"Download timed out after retries: {exc}")
             await self.recorder.capture(topic_page, "download-timeout", note=f"{hit.url}: {exc}")
             return None
@@ -1126,10 +1132,6 @@ class Runner:
         try:
             meta = parse_file(path)
         except TorrentError as exc:
-            outcome.failures += 1
-            outcome.failure_details.append(
-                f"Torrent topic {hit.topic_id}: the downloaded torrent could not be parsed."
-            )
             not_stored(f"Downloaded torrent could not be parsed: {exc}")
             return None
 

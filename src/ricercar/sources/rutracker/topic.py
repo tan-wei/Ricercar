@@ -16,6 +16,7 @@ from ricercar.log import get_logger
 from ricercar.models import TopicInfo
 from ricercar.sources.base import (
     SelectorsBrokenError,
+    SessionExpiredError,
     SiteUnderMaintenanceError,
     TorrentUnavailableError,
 )
@@ -46,8 +47,10 @@ async def open_topic(
     """Navigate to a topic page and read its information.
 
     Raises:
-        SelectorsBrokenError: the page is not a topic page at all (a challenge, a
-            login form, or a layout the selectors no longer match).
+        SiteUnderMaintenanceError: the tracker is unusable right now.
+        SessionExpiredError: a challenge or the login form replaced the topic page.
+        SelectorsBrokenError: the page is not a topic page at all, and no known
+            session problem explains it (a layout the selectors no longer match).
     """
     await goto(page, url)
     html = await page.content()
@@ -55,6 +58,8 @@ async def open_topic(
     if issues:
         if any("maintenance" in issue for issue in issues):
             raise SiteUnderMaintenanceError("; ".join(issues))
+        if any("challenge" in issue.lower() or "login form" in issue.lower() for issue in issues):
+            raise SessionExpiredError("; ".join(issues))
         raise SelectorsBrokenError(issues)
     return parse_topic(html, page.url, selectors)
 

@@ -200,7 +200,7 @@ def test_candidates_exclude_covered_authors_but_keep_uncovered_sections(
     assert {u.author for u in runner._candidate_uploaders(source)} == {"section", "filtered", "new"}
 
 
-@pytest.mark.parametrize("result", ["empty", "partial", "timeout", "download failure"])
+@pytest.mark.parametrize("result", ["empty", "partial", "timeout", "torrent problem"])
 def test_drive_distinguishes_empty_success_from_incomplete_or_failed_searches(
     run_config: Settings,
     monkeypatch: pytest.MonkeyPatch,
@@ -223,8 +223,8 @@ def test_drive_distinguishes_empty_success_from_incomplete_or_failed_searches(
     async def run_task(*_args: object) -> tuple[bool, list[str]]:
         if result == "timeout":
             raise PlaywrightTimeout("timeout")
-        if result == "download failure":
-            outcome.failures += 1
+        if result == "torrent problem":
+            outcome.not_stored_details.append("Bach: torrent could not be parsed")
         return result != "partial", []
 
     monkeypatch.setattr(runner, "_run_task", run_task)
@@ -245,16 +245,52 @@ def test_drive_distinguishes_empty_success_from_incomplete_or_failed_searches(
             "empty": "completed",
             "partial": "incomplete",
             "timeout": "failed",
-            "download failure": "failed",
+            "torrent problem": "completed",
         }[result]
     )
     history = runner.history.yields("fake")
-    if result == "empty":
+    if result in ("empty", "torrent problem"):
         assert results == {"Bach": []}
         assert history[task_key(task)].runs == 1
     else:
         assert results == {}
         assert task_key(task) not in history
+
+
+def test_a_torrent_that_cannot_be_stored_does_not_keep_the_task_pending(
+    run_config: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A search that found the topics is complete even when one torrent is unusable."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    task = SearchTask(text="Bach")
+    source = ReplaySource(_settings(tasks=[task]), [[_hit("one"), _hit("two")]])
+    runner = _runner(run_config, source)
+    session = MagicMock()
+    session.context.new_page = AsyncMock(return_value=AsyncMock())
+    monkeypatch.setattr(runner, "_prepare", AsyncMock())
+    monkeypatch.setattr(runner, "_download_hit", AsyncMock(side_effect=[None, "Bach two"]))
+    outcome = SourceOutcome(source=source.name)
+
+    with new_progress() as progress, runner.repo:
+        asyncio.run(
+            runner._drive(
+                source,
+                session,
+                _plans(runner, source),
+                10,
+                outcome,
+                progress,
+            )
+        )
+
+    key = task_key(task)
+    assert outcome.task_status[key] == "completed"
+    assert outcome.done == 1
+    assert outcome.failures == 0
+    assert runner.state.completed_today(source.name) == {key}
+    assert key not in runner.state.source(source.name).allocated
 
 
 def test_drive_combines_downloads_from_all_categories(
@@ -1547,7 +1583,10 @@ def test_download_failures_record_the_right_outcome_and_evidence(
     assert result is None
     assert outcome.downloaded == 1
     assert outcome.stored == 0
-    assert outcome.failures == (0 if failure == "unavailable" else 1)
+    # A single unusable torrent says nothing about the search that found it, so it is
+    # not a run failure and must not hold the task pending.
+    assert outcome.failures == 0
+    assert outcome.failure_details == []
     assert len(outcome.not_stored_details) == outcome.downloaded - outcome.stored == 1
     detail = outcome.not_stored_details[0]
     assert _hit("one").url in detail
@@ -1566,7 +1605,6 @@ def test_download_failures_record_the_right_outcome_and_evidence(
                 "timeout": "download-timeout",
             }[failure]
         )
-        assert outcome.failure_details
     else:
         capture.assert_not_awaited()
 

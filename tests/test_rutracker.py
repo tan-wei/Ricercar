@@ -13,7 +13,11 @@ from bs4 import BeautifulSoup
 
 from ricercar.config import SearchTask, SourceSettings
 from ricercar.models import SearchPage
-from ricercar.sources.base import SelectorsBrokenError, SiteUnderMaintenanceError
+from ricercar.sources.base import (
+    SelectorsBrokenError,
+    SessionExpiredError,
+    SiteUnderMaintenanceError,
+)
 from ricercar.sources.rutracker import RutrackerSource, parse_results, uploaders
 from ricercar.sources.rutracker import session as session_module
 from ricercar.sources.rutracker.diagnose import diagnose_results, diagnose_topic
@@ -675,4 +679,12 @@ def test_open_topic_raises_selectors_broken_on_unknown_page() -> None:
     page = _FakeTopicPage(PLAIN_HTML)
 
     with pytest.raises(SelectorsBrokenError, match="not a topic page"):
+        asyncio.run(open_topic(page, TOPIC_URL))
+
+
+@pytest.mark.parametrize("html", [CHALLENGE_HTML, LOGIN_HTML])
+def test_open_topic_treats_a_challenge_or_login_page_as_an_expired_session(html: str) -> None:
+    page = _FakeTopicPage(html)
+
+    with pytest.raises(SessionExpiredError):
         asyncio.run(open_topic(page, TOPIC_URL))
