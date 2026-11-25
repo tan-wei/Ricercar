@@ -313,6 +313,11 @@ class DiagnosticsConfig(BaseModel):
     """Record Playwright traces per step and keep the trace of the step that failed
     (``playwright show-trace <dir>/trace.zip``). Costs time and disk, so it can be
     turned off."""
+    save_screenshots: bool = True
+    """Write ``page.png`` — a full-page screenshot — next to the failing page."""
+    save_page_html: bool = True
+    """Write ``page.html`` — the document as the browser parsed it — next to the
+    failing page."""
 
 
 class ScheduleConfig(BaseModel):

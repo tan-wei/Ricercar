@@ -114,6 +114,49 @@ def test_capture_survives_a_page_that_cannot_be_read(recorder: Recorder) -> None
     assert failure.title == ""
 
 
+# ── Turning artifacts off ────────────────────────────────────────────────
+
+
+def test_a_screenshot_can_be_turned_off(tmp_path: Path) -> None:
+    recorder = Recorder(tmp_path / "failures", save_traces=False, save_screenshots=False)
+
+    failure = asyncio.run(recorder.capture(FakePage(), "selectors"))
+
+    assert not (failure.directory / "page.png").exists()
+    assert (failure.directory / "page.html").exists()
+
+
+def test_the_page_html_can_be_turned_off(tmp_path: Path) -> None:
+    recorder = Recorder(tmp_path / "failures", save_traces=False, save_page_html=False)
+
+    failure = asyncio.run(recorder.capture(FakePage(), "selectors"))
+
+    assert not (failure.directory / "page.html").exists()
+    assert (failure.directory / "page.png").exists()
+
+
+def test_a_minimal_failure_still_records_the_reason(tmp_path: Path) -> None:
+    # Everything but failure.json can be switched off, and the run still reports the
+    # failure — evidence is a convenience, not a requirement.
+    recorder = Recorder(
+        tmp_path / "failures",
+        save_traces=False,
+        save_screenshots=False,
+        save_page_html=False,
+    )
+
+    failure = asyncio.run(
+        recorder.capture(FakePage(), "selectors", issues=("no row matches",), note="note")
+    )
+
+    assert failure.trace is None
+    assert [path.name for path in failure.directory.iterdir()] == ["failure.json"]
+    payload = json.loads((failure.directory / "failure.json").read_text(encoding="utf-8"))
+    assert payload["reason"] == "selectors"
+    assert payload["issues"] == ["no row matches"]
+    assert payload["note"] == "note"
+
+
 # ── Tracing ───────────────────────────────────────────────────────────────
 
 

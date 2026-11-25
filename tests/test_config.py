@@ -75,6 +75,8 @@ def test_run_defaults() -> None:
     assert schedule.run_on_start is True
 
     assert DiagnosticsConfig().save_traces is True
+    assert DiagnosticsConfig().save_screenshots is True
+    assert DiagnosticsConfig().save_page_html is True
     assert BrowserConfig().navigation_timeout == 30_000
     assert BrowserConfig().temp_dir == str(config.DATA_DIR / "playwright")
     assert BrowserConfig().artifact_rotation_hours == 24

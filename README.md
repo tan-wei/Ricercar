@@ -121,7 +121,9 @@ Only Playwright's own cleanup is used: Ricercar does not scan or delete temporar
 directories. Force-killing the process can therefore leave artifacts behind, and old
 directories already in the system Temp folder are not migrated or removed. Exported
 failure evidence under `diagnostics.failures_dir` is kept separately and has no automatic
-expiry. Set `diagnostics.save_traces: false` to avoid recording tracing resources.
+expiry. Set `diagnostics.save_traces: false` to avoid recording tracing resources, and
+`diagnostics.save_screenshots` / `diagnostics.save_page_html` to `false` to skip those
+artifacts; `failure.json` is always written.
 
 When notification URLs are configured, there are four types of run messages:
 

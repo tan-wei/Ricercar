@@ -35,6 +35,8 @@ diagnostics:
   # One directory per failure: page.html, page.png, trace.zip, failure.json
   failures_dir: data/failures
   save_traces: true # traces cost time and disk; the failing one is the only one kept
+  save_screenshots: true # a full-page page.png beside the failure
+  save_page_html: true # the document as parsed, page.html — the cheapest evidence
 
 schedule:
   interval_minutes: 60 # `ricercar` with no --once repeats on this interval

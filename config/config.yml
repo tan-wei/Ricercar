@@ -38,6 +38,8 @@ run:
 diagnostics:
   failures_dir: data/failures
   save_traces: true
+  save_screenshots: true
+  save_page_html: true
 
 # `ricercar` with no arguments runs on this interval; `--once` runs a single cycle.
 schedule:

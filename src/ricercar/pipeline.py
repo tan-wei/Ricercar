@@ -356,6 +356,8 @@ class Runner:
         self.recorder = Recorder(
             Path(self.cfg.diagnostics.failures_dir),
             save_traces=self.cfg.diagnostics.save_traces,
+            save_screenshots=self.cfg.diagnostics.save_screenshots,
+            save_page_html=self.cfg.diagnostics.save_page_html,
         )
         self.notifier = notifier if notifier is not None else Notifier.from_config(self.cfg.notify)
         self.repo = TorrentRepository(self.cfg.db_path)

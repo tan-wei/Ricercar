@@ -12,6 +12,10 @@ failure writes what the browser actually had in front of it into
 * ``failure.json`` — URL, title, the reason, the issues the source reported, and
   anything the caller wanted to add.
 
+Each browser artifact can be switched off through ``diagnostics.save_traces``,
+``diagnostics.save_screenshots`` and ``diagnostics.save_page_html``;
+``failure.json`` is always written, so a failure is never lost to a disabled artifact.
+
 Traces are recorded in *chunks*: only the chunk containing a failure is exported.
 Playwright retains raw recording resources until the CDP connection is disconnected;
 the browser layer and pipeline rotate that connection to reclaim temporary artifacts.
@@ -68,10 +72,12 @@ class Recorder:
         *,
         save_traces: bool = True,
         save_screenshots: bool = True,
+        save_page_html: bool = True,
     ) -> None:
         self._root = root
         self._want_traces = save_traces
         self._want_screenshots = save_screenshots
+        self._want_page_html = save_page_html
         self._context: BrowserContext | None = None
         self._tracing = False
         self._in_chunk = False
@@ -178,11 +184,12 @@ class Recorder:
         except PlaywrightError as exc:
             log.debug("Could not read the page title: {}", exc)
 
-        try:
-            html = await page.content()
-        except PlaywrightError as exc:
-            html = f"<!-- page.content() failed: {exc} -->"
-        (directory / "page.html").write_text(html, encoding="utf-8")
+        if self._want_page_html:
+            try:
+                html = await page.content()
+            except PlaywrightError as exc:
+                html = f"<!-- page.content() failed: {exc} -->"
+            (directory / "page.html").write_text(html, encoding="utf-8")
 
         if self._want_screenshots:
             try:
