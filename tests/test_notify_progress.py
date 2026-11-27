@@ -11,7 +11,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ricercar.config import NotifyConfig
-from ricercar.notify.progress import ProgressReporter, ProgressSnapshot, report_activity
+from ricercar.notify.progress import (
+    ProgressReporter,
+    ProgressSnapshot,
+    current_activity,
+    report_activity,
+)
 
 
 @pytest.fixture
@@ -176,6 +181,20 @@ def test_known_wait_is_not_a_stall_and_recovery_is_reported_once(reporting: Any)
     )
 
 
+def test_inactivity_alert_identifies_stuck_task_and_phase(reporting: Any) -> None:
+    reporter, state, notifier = reporting
+    reporter._stall = 60
+    reporter.activity("Submitting author filter", task="Bach")
+    state.now = 61
+
+    asyncio.run(reporter.poll())
+
+    assert (
+        "Submitting author filter; task: Bach; idle: 61s"
+        in (notifier.run_alert.call_args.kwargs["alerts"][0])
+    )
+
+
 def test_periodic_report_includes_zero_progress_even_with_alerts_disabled(reporting: Any) -> None:
     reporter, state, notifier = reporting
     reporter.config.alerts_enabled = False
@@ -213,12 +232,16 @@ def test_stop_cancels_pending_delivery_and_clears_context(reporting: Any) -> Non
 
 
 def test_disabled_notifier_creates_no_background_task(reporting: Any) -> None:
-    reporter, _, notifier = reporting
+    reporter, state, notifier = reporting
     notifier.enabled = False
 
     async def run() -> None:
         reporter.start()
         assert reporter._task is None
+        report_activity("Waiting for author filter navigation")
+        state.now = 12
+        assert current_activity() == ("Waiting for author filter navigation", 12)
         await reporter.stop()
+        assert current_activity() is None
 
     asyncio.run(run())

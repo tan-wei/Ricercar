@@ -199,6 +199,26 @@ def test_the_chunk_that_failed_is_the_one_that_is_kept(tmp_path: Path) -> None:
     assert not list(recorder.root.glob("*.zip"))  # moved, not copied
 
 
+def test_trace_failure_does_not_hide_the_original_search_failure(tmp_path: Path) -> None:
+    recorder = Recorder(tmp_path / "failures", save_traces=True)
+    context = FakeContext()
+
+    async def broken_stop_chunk(**_kwargs: object) -> None:
+        raise PlaywrightError("CDP disconnected")
+
+    context.tracing.stop_chunk = broken_stop_chunk
+
+    async def run() -> None:
+        await recorder.start(context)
+        with pytest.raises(ValueError, match="search failed"):
+            async with recorder.chunk("search Bach"):
+                raise ValueError("search failed")
+        await recorder.stop()
+
+    asyncio.run(run())
+    assert not recorder._tracing
+
+
 def test_a_failure_handled_inside_a_chunk_can_still_keep_its_trace(tmp_path: Path) -> None:
     context = FakeContext()
     recorder = Recorder(tmp_path / "failures", save_traces=True)

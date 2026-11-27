@@ -142,6 +142,14 @@ it) detects inactivity outside known rate-limit and retry waits. These defaults 
 `config/config.yml`; override individual settings in `config/config.local.yml`.
 Reports run independently of search completion, stop when the run ends, and do not
 stop downloads if delivery fails. This is not an external watchdog.
+An inactivity warning in `data/logs/` names the active search task and phase (including
+the author-filter step). Search-page timeouts also log the last browser operation and how
+long it was pending, even if notifications are disabled; the filter distinguishes filling
+the field, clicking submit, waiting for navigation, and reading results. Each search page
+has a separate deadline of at least five
+minutes, extended for configured browser timeouts; if it expires, the search enters the
+existing retry and failure-diagnostics path. A CDP connection that remains unresponsive
+during browser cleanup may still require restarting the attached browser.
 
 ## Requirements
 

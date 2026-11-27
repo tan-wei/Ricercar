@@ -43,6 +43,13 @@ def report_activity(
         reporter.activity(phase, task=task, wait_seconds=wait_seconds, issue=issue)
 
 
+def current_activity() -> tuple[str, float] | None:
+    """Return the active step and seconds spent there for timeout diagnostics."""
+    if (reporter := _ACTIVE.get()) is None:
+        return None
+    return reporter.phase, reporter.now() - reporter._last_activity
+
+
 class ProgressReporter:
     """Observe a running source independently of search completion."""
 
@@ -89,9 +96,9 @@ class ProgressReporter:
         self._token: Token[ProgressReporter | None] | None = None
 
     def start(self) -> None:
+        self._token = _ACTIVE.set(self)
         if not self.notifier.enabled or (not self._interval and not self.config.alerts_enabled):
             return
-        self._token = _ACTIVE.set(self)
         self._task = asyncio.create_task(self._run(), name=f"{self.source}-progress")
 
     async def stop(self) -> None:
@@ -126,7 +133,7 @@ class ProgressReporter:
         if self._stalled:
             self._stalled = False
             self._alert("recovered", "Activity resumed after an inactivity alert.")
-        if issue:
+        if issue and self.notifier.enabled:
             self._alert(issue, issue)
 
     async def _send(self, operation: Awaitable[bool]) -> bool:
@@ -166,7 +173,8 @@ class ProgressReporter:
             self._stalled = True
             detail = (
                 f"No activity for {self._stall / 60:g} minute(s) outside known waits. "
-                f"Current phase: {self.phase}."
+                f"Current phase: {self.phase}; task: {self.current_task or 'none'}; "
+                f"idle: {now - self._last_activity:.0f}s."
             )
             get_logger().warning("{}: {}", self.source, detail)
             self._alert("inactive", detail)
