@@ -15,12 +15,12 @@ dependencies = [
     "bencode.py>=4.0",
     "loguru>=0.8.0",
     "tenacity>=9.2.1",
-    "pyyaml>=6.0",
+    "pyyaml>=6.0.4",
     "pydantic>=2.14.4",
     "pydantic-settings>=2.16.3",
     "apscheduler>=3.10",
     "rich>=13.0",
-    "apprise>=2.2.0",
+    "apprise>=2.3.0",
     "ruamel-yaml>=0.19.1",
 ]
 

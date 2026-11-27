@@ -39,6 +39,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from rich.progress import Progress, TaskID
 
 from ricercar.browser import BrowserSession, managed_browser
+from ricercar.browser.navigation import CF_WAIT_TIMEOUT
 from ricercar.categories import CategoryDiff, check_categories
 from ricercar.config import SearchTask, Settings, get_settings
 from ricercar.diagnostics import Recorder
@@ -47,7 +48,12 @@ from ricercar.history import TaskHistory, TaskYield, configured_task_keys
 from ricercar.log import get_logger
 from ricercar.models import SearchHit
 from ricercar.notify import Notifier
-from ricercar.notify.progress import ProgressReporter, ProgressSnapshot, report_activity
+from ricercar.notify.progress import (
+    ProgressReporter,
+    ProgressSnapshot,
+    current_activity,
+    report_activity,
+)
 from ricercar.parser import TorrentError, parse_file
 from ricercar.progress import new_progress
 from ricercar.repository import TorrentRepository
@@ -68,6 +74,9 @@ MAX_TASK_FAILURES = 2
 One broken page is a bad page; two in a row mean the site changed, and continuing
 would only produce more copies of the same evidence.
 """
+
+MIN_SEARCH_PAGE_TIMEOUT = 300.0
+"""Minimum seconds to wait for one search page, including its initial form submission."""
 
 LISTED_STALE = 9999
 """How many dead-looking tasks the end-of-run warning names before it says "… and N more".
@@ -777,12 +786,20 @@ class Runner:
                         f"Search timed out after retries: {plan.label}. "
                         "Check network access, Cloudflare verification and the browser session."
                     )
-                    await self.recorder.capture(
-                        results_page,
-                        "selectors" if issues else "timeout",
-                        issues=issues,
-                        note=str(exc),
-                    )
+                    try:
+                        async with asyncio.timeout(30):
+                            await self.recorder.capture(
+                                results_page,
+                                "selectors" if issues else "timeout",
+                                issues=issues,
+                                note=str(exc),
+                            )
+                    except TimeoutError:
+                        log.warning(
+                            "{}: browser did not respond while saving timeout evidence for {}",
+                            source.name,
+                            describe_task(task),
+                        )
                     if issues:
                         failures_in_a_row += 1
                         log.error(
@@ -952,13 +969,46 @@ class Runner:
             pages = source.search(results_page, task, max_pages=source.settings.max_pages)
             page_index = 0
             new_hits: list[SearchHit] = []
+            # Cover a stuck CDP call even when Playwright's own timeout never fires.
+            page_timeout = max(
+                MIN_SEARCH_PAGE_TIMEOUT,
+                (
+                    4 * self.cfg.browser.navigation_timeout
+                    + 2 * self.cfg.browser.action_timeout
+                    + CF_WAIT_TIMEOUT
+                )
+                / 1000,
+            )
 
             while True:
                 page_index += 1
                 async with self.recorder.chunk(f"{describe_task(task)} — page {page_index}"):
                     try:
                         report_activity(f"Reading search page {page_index}")
-                        results = await pages.__anext__()
+                        try:
+                            try:
+                                async with asyncio.timeout(page_timeout):
+                                    results = await pages.__anext__()
+                            except TimeoutError as exc:
+                                raise PlaywrightTimeout(
+                                    f"Search page {page_index} exceeded {page_timeout:.0f}s"
+                                ) from exc
+                        except PlaywrightTimeout:
+                            activity = current_activity()
+                            phase, elapsed = (
+                                activity if activity is not None else ("unavailable", 0.0)
+                            )
+                            log.warning(
+                                "{}: search page {} for {} timed out; "
+                                "last operation: {} for {:.0f}s (page deadline {:.0f}s)",
+                                source.name,
+                                page_index,
+                                describe_task(task),
+                                phase,
+                                elapsed,
+                                page_timeout,
+                            )
+                            raise
                     except StopAsyncIteration:
                         return True, new_hits
 
@@ -1349,8 +1399,9 @@ class Runner:
     async def _diagnose(self, source: Source, page: Page) -> tuple[str, ...]:
         """Ask the source what is wrong with *page* (empty when nothing is)."""
         try:
-            html = await page.content()
-        except PlaywrightError as exc:  # pragma: no cover - the page is gone
+            async with asyncio.timeout(30):
+                html = await page.content()
+        except (PlaywrightError, TimeoutError) as exc:  # pragma: no cover - page is gone
             get_logger().debug("Could not read the page for a diagnosis: {}", exc)
             return ()
         return source.diagnose(html)

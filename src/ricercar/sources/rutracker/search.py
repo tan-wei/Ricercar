@@ -18,6 +18,7 @@ from playwright.async_api import Page
 from ricercar.browser.navigation import NAVIGATION_TIMEOUT, goto, wait_for_cloudflare
 from ricercar.log import get_logger
 from ricercar.models import SearchHit, SearchPage
+from ricercar.notify.progress import report_activity
 from ricercar.sources.base import SelectorsBrokenError, SiteUnderMaintenanceError
 from ricercar.sources.rutracker.diagnose import diagnose
 from ricercar.sources.rutracker.selectors import DEFAULT_SELECTORS, Selectors
@@ -165,8 +166,11 @@ async def start_search(
     url = selectors.search_url(text, category)
     get_logger().info("Searching: {}", url)
     await goto(page, url)
+    report_activity("Checking Cloudflare after search navigation")
     await wait_for_cloudflare(page)
+    report_activity("Reading initial search response")
     _raise_if_unusable(await page.content(), selectors)
+    report_activity("Waiting for initial search results")
     await wait_for_results(page, selectors)
 
 
@@ -204,6 +208,7 @@ async def iter_result_pages(
 
     while url is not None and page_index < max_pages:
         page_index += 1
+        report_activity(f"Reading search page {page_index} HTML")
         html = await page.content()
         hits = parse_results(html, selectors)
         counted = page_count(html, selectors)
@@ -233,7 +238,9 @@ async def iter_result_pages(
             return
         log.info("Next page: {}", url)
         await goto(page, url)
+        report_activity(f"Reading search page {page_index + 1} response")
         _raise_if_unusable(await page.content(), selectors)
+        report_activity(f"Waiting for search page {page_index + 1} results")
         await wait_for_results(page, selectors)
 
 
@@ -251,14 +258,20 @@ async def apply_author_filter(
     log = get_logger()
     log.info("Filtering by author '{}'", author)
 
+    report_activity("Filling author filter")
     await page.fill(selectors.author_filter_field, author)
     # The filter form POSTs and reloads the results, so wait for that navigation:
     # `wait_for_results` cannot help here, since the page in front of us already
     # satisfies it.
+    report_activity("Clicking author filter submit")
     async with page.expect_navigation(wait_until="domcontentloaded"):
         await page.click(selectors.author_filter_submit)
+        report_activity("Waiting for author filter navigation")
+    report_activity("Waiting for filtered results")
     await wait_for_results(page, selectors)
+    log.debug("Author filter returned results")
 
+    report_activity("Reading filtered result uploaders")
     unexpected = uploaders(await page.content(), selectors) - {author}
     if unexpected:
         # Not fatal: callers can still filter on SearchHit.author themselves.

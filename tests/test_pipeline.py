@@ -13,16 +13,21 @@ import time
 from collections.abc import AsyncIterator, Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 from urllib.error import URLError
 from urllib.request import urlopen
 
 import pytest
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 from rich.progress import Progress, TaskID
 
+import ricercar.pipeline as pipeline_module
 from ricercar.config import QuotaConfig, SearchTask, Settings, SourceSettings
 from ricercar.history import TaskHistory
 from ricercar.models import SearchHit, SearchPage, TorrentMetadata
+from ricercar.notify.progress import ProgressReporter, ProgressSnapshot, report_activity
 from ricercar.parser.torrent import parse_file
 from ricercar.pipeline import (
     PAUSE_TICK,
@@ -423,6 +428,76 @@ def test_search_updates_known_uploader_observations(
     assert set(uploader.sections_seen) == {1, 2}
     assert uploader.last_seen != "2020-01-01T00:00:00"
     assert outcome.new_authors == []
+
+
+@pytest.mark.parametrize("native_timeout", [False, True])
+def test_search_page_timeout_logs_active_operation_without_notifications(
+    run_config: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    native_timeout: bool,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    source = FakeSource(_settings(tasks=[SearchTask(text="Bach", category=1)]))
+    run_config.retry.max_attempts = 1
+    run_config.browser.navigation_timeout = 0
+    run_config.browser.action_timeout = 0
+    monkeypatch.setattr(pipeline_module, "CF_WAIT_TIMEOUT", 0)
+    monkeypatch.setattr(pipeline_module, "MIN_SEARCH_PAGE_TIMEOUT", 0.01)
+    runner = _runner(run_config, source)
+    cancelled = asyncio.Event()
+
+    async def stuck_search(*_args: object, **_kwargs: object) -> AsyncIterator[SearchPage]:
+        try:
+            report_activity("Waiting for author filter navigation")
+            if native_timeout:
+                raise PlaywrightTimeout("native timeout")
+            await asyncio.Future()
+            yield SearchPage(hits=[], number=1)
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(source, "search", stuck_search, raising=False)
+
+    async def run() -> None:
+        reporter = ProgressReporter(
+            SimpleNamespace(enabled=False),
+            run_config.notify,
+            "fake",
+            tasks=1,
+            budget=10,
+            snapshot=ProgressSnapshot,
+        )
+        reporter.start()
+        try:
+            with runner.repo, new_progress() as progress:
+                bar = progress.add_task("torrents", total=10)
+                with (
+                    patch("ricercar.pipeline.get_logger") as logger,
+                    pytest.raises(
+                        PlaywrightTimeout,
+                        match="native timeout" if native_timeout else "Search page 1 exceeded",
+                    ),
+                ):
+                    await runner._run_task(
+                        source,
+                        _plans(runner, source)[0],
+                        AsyncMock(),
+                        AsyncMock(),
+                        10,
+                        SourceOutcome(source="fake"),
+                        progress,
+                        bar,
+                    )
+                warning = logger.return_value.warning.call_args
+                assert warning.args[0].startswith("{}: search page {} for {} timed out")
+                assert warning.args[4] == "Waiting for author filter navigation"
+                assert warning.args[5] >= 0
+        finally:
+            await reporter.stop()
+        assert cancelled.is_set()
+
+    asyncio.run(run())
 
 
 def test_quota_limited_downloads_leave_task_incomplete(

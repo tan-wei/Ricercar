@@ -23,6 +23,7 @@ the browser layer and pipeline rotate that connection to reclaim temporary artif
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -131,10 +132,20 @@ class Recorder:
         except BaseException:
             if self._pending is None:
                 self._pending = self._new_path()
-                await self._context.tracing.stop_chunk(path=self._pending)
+                try:
+                    await asyncio.wait_for(
+                        self._context.tracing.stop_chunk(path=self._pending), timeout=10
+                    )
+                except (PlaywrightError, TimeoutError) as exc:
+                    get_logger().warning("Could not save the failed search trace: {}", exc)
+                    self._tracing = False
             else:
                 # Something inside already kept its own chunk (see keep_chunk).
-                await self._context.tracing.stop_chunk()
+                try:
+                    await asyncio.wait_for(self._context.tracing.stop_chunk(), timeout=10)
+                except (PlaywrightError, TimeoutError) as exc:
+                    get_logger().warning("Could not stop the failed search trace: {}", exc)
+                    self._tracing = False
             raise
         else:
             # Nothing went wrong here: drop the chunk instead of accumulating traces.

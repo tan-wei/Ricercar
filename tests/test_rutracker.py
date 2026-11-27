@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -23,6 +23,7 @@ from ricercar.sources.rutracker import session as session_module
 from ricercar.sources.rutracker.diagnose import diagnose_results, diagnose_topic
 from ricercar.sources.rutracker.search import (
     _raise_if_unusable,
+    apply_author_filter,
     iter_result_pages,
     next_page_url,
     page_count,
@@ -153,6 +154,25 @@ def test_an_override_changes_how_the_page_is_read(search_html: str) -> None:
 
     assert parse_results(search_html, selectors) == []
     assert any("no row matches" in issue for issue in diagnose_results(search_html, selectors))
+
+
+def test_author_filter_reports_each_blocking_step() -> None:
+    page = MagicMock()
+    page.fill = AsyncMock()
+    page.click = AsyncMock()
+    page.wait_for_function = AsyncMock()
+    page.content = AsyncMock(return_value="<html><body></body></html>")
+
+    with patch("ricercar.sources.rutracker.search.report_activity") as activity:
+        asyncio.run(apply_author_filter(page, "Bach"))
+
+    assert [call.args[0] for call in activity.call_args_list] == [
+        "Filling author filter",
+        "Clicking author filter submit",
+        "Waiting for author filter navigation",
+        "Waiting for filtered results",
+        "Reading filtered result uploaders",
+    ]
 
 
 # ── How many pages a search has, and how far the walk goes ────────────────
